@@ -1,0 +1,138 @@
+@import 'tailwindcss';
+@import '@xyflow/react/dist/style.css';
+
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'Cascadia Code', monospace;
+
+  --color-canvas: #090a0e;
+  --color-panel: #0f1117;
+  --color-panel2: #151821;
+  --color-panel3: #1b1f2a;
+  --color-line: #20242f;
+  --color-line2: #2c3140;
+  --color-fg: #e8eaf0;
+  --color-muted: #8f97aa;
+  --color-faint: #5d6477;
+  --color-accent: #8b7cff;
+  --color-src: #38bdf8;
+  --color-trf: #a78bfa;
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-err: #f87171;
+  --color-run: #60a5fa;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line2) transparent;
+}
+
+/* React Flow, dark & quiet */
+.react-flow {
+  --xy-background-color: var(--color-canvas);
+  --xy-edge-stroke: #3a4052;
+  --xy-edge-stroke-selected: var(--color-accent);
+  --xy-edge-stroke-width: 1.75;
+  --xy-connectionline-stroke: var(--color-accent);
+  --xy-handle-background-color: var(--color-panel3);
+  --xy-handle-border-color: var(--color-line2);
+  --xy-controls-button-background-color: var(--color-panel);
+  --xy-controls-button-background-color-hover: var(--color-panel3);
+  --xy-controls-button-color: var(--color-muted);
+  --xy-controls-button-border-color: var(--color-line);
+  --xy-minimap-background-color: var(--color-panel);
+  --xy-minimap-mask-background-color: rgb(9 10 14 / 0.6);
+  --xy-selection-background-color: rgb(139 124 255 / 0.08);
+  --xy-selection-border: 1px dashed rgb(139 124 255 / 0.6);
+}
+.react-flow__controls {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  box-shadow: none;
+}
+.react-flow__minimap {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+}
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border-width: 2px;
+  transition: transform 120ms, border-color 120ms;
+}
+.react-flow__handle:hover,
+.react-flow__handle.connectingto {
+  transform: scale(1.35);
+  border-color: var(--color-accent);
+}
+.react-flow__edge.edge-running path.react-flow__edge-path {
+  stroke: var(--color-run);
+}
+.react-flow__edge.edge-stale path.react-flow__edge-path {
+  stroke-dasharray: 5 5;
+}
+.react-flow__attribution {
+  background: transparent;
+  opacity: 0.35;
+}
+.react-flow__attribution a {
+  color: var(--color-faint);
+}
+
+/* Resizable separators */
+[data-separator] {
+  background: var(--color-line);
+  transition: background 120ms;
+}
+[data-separator='hover'],
+[data-separator='active'] {
+  background: var(--color-accent);
+}
+
+@keyframes ldi-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.animate-ldi-pulse {
+  animation: ldi-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ldi-sheen {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.running-sheen {
+  background: linear-gradient(90deg, transparent, rgb(96 165 250 / 0.55), transparent) 0 0 / 200% 100%;
+  animation: ldi-sheen 1.6s linear infinite;
+}
