@@ -1,4 +1,5 @@
 export type NodeKind = 'source' | 'transform'
+export type SourceType = 'bq_query' | 'bq_table' | 'file'
 export type NodeStatus = 'running' | 'error' | 'never_run' | 'stale' | 'fresh'
 
 export interface Column {
@@ -15,9 +16,26 @@ export interface RunResult {
   finished_at: string
 }
 
+export interface TableSourceConfig {
+  table: string
+  columns?: string[]
+  row_filter?: string
+}
+
+export interface FileSourceConfig {
+  file: string
+  name: string
+  format: 'csv' | 'parquet' | 'excel' | 'json'
+  size: number
+  sheets?: string[]
+  sheet?: string
+}
+
 export interface WNode {
   id: string
   kind: NodeKind
+  source_type: SourceType | null
+  config: Partial<TableSourceConfig & FileSourceConfig>
   name: string
   sql: string
   x: number
@@ -60,6 +78,7 @@ export interface Settings {
   max_bytes_billed: number
   confirm_above_bytes: number
   price_per_tib_usd: number
+  bq_pinned_projects: string[]
 }
 
 export interface BqStatus {
@@ -69,6 +88,31 @@ export interface BqStatus {
   error: string | null
   hint: string | null
 }
+
+export interface BqField {
+  name: string
+  type: string
+  mode: string
+  description: string | null
+  fields?: BqField[]
+}
+
+export interface BqTableInfo {
+  id: string
+  type: string
+  num_rows: number | null
+  num_bytes: number | null
+  location: string | null
+  created: string | null
+  modified: string | null
+  description: string | null
+  partitioning: { type: string; field: string | null } | null
+  clustering: string[] | null
+  columns: BqField[]
+}
+
+export type ExportFormat = 'csv' | 'parquet' | 'xlsx'
+export type PushMode = 'create' | 'overwrite' | 'append'
 
 export class ApiError extends Error {
   constructor(
@@ -80,10 +124,11 @@ export class ApiError extends Error {
 }
 
 async function req<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const raw = body instanceof Blob
   const res = await fetch(`/api${path}`, {
     method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: body === undefined || raw ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
     signal,
   })
   if (!res.ok) {
@@ -97,20 +142,46 @@ async function req<T>(method: string, path: string, body?: unknown, signal?: Abo
     }
     throw new ApiError(message, res.status)
   }
-  return (res.status === 204 ? undefined : await res.json()) as T
+  if (res.status === 204) return undefined as T
+  return (res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text()) as T
 }
+
+const qs = (params: Record<string, string | number>) =>
+  new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString()
 
 export const api = {
   workspace: () => req<Workspace>('GET', '/workspace'),
-  createNode: (body: { kind: NodeKind; name?: string; sql?: string; x: number; y: number; inputs?: string[] }) =>
-    req<WNode>('POST', '/nodes', body),
-  updateNode: (id: string, body: Partial<Pick<WNode, 'name' | 'sql' | 'x' | 'y'>>) =>
+  createNode: (body: {
+    kind: NodeKind
+    source_type?: 'bq_query' | 'bq_table'
+    name?: string
+    name_hint?: string
+    sql?: string
+    config?: WNode['config']
+    x: number
+    y: number
+    inputs?: string[]
+  }) => req<WNode>('POST', '/nodes', body),
+  updateNode: (id: string, body: Partial<Pick<WNode, 'name' | 'sql' | 'config' | 'x' | 'y'>>) =>
     req<WNode>('PATCH', `/nodes/${id}`, body),
+  renamePreview: (id: string, name: string) =>
+    req<{ affected: { id: string; name: string; references: number }[] }>(
+      'GET',
+      `/nodes/${id}/rename-preview?${qs({ name })}`,
+    ),
+  uploadFile: (file: File, pos: { x: number; y: number }) =>
+    req<WNode>('POST', `/files?${qs({ filename: file.name, ...pos })}`, file),
+  replaceFile: (id: string, file: File) => req<WNode>('PUT', `/nodes/${id}/file?${qs({ filename: file.name })}`, file),
   deleteNode: (id: string) => req<void>('DELETE', `/nodes/${id}`),
   createEdge: (source: string, target: string) => req<WEdge>('POST', '/edges', { source, target }),
   deleteEdge: (source: string, target: string) => req<void>('DELETE', `/edges/${source}/${target}`),
   run: (id: string) => req<{ queued: string[] }>('POST', `/nodes/${id}/run`),
   runDownstream: (id: string) => req<{ queued: string[] }>('POST', `/nodes/${id}/run-downstream`),
+  cancel: (id: string) => req<{ cancelled: boolean }>('POST', `/nodes/${id}/cancel`),
+  exportUrl: (id: string, format: ExportFormat) => `/api/nodes/${id}/export?${qs({ format })}`,
+  exportTsv: (id: string, limit: number) => req<string>('GET', `/nodes/${id}/export?${qs({ format: 'tsv', limit })}`),
+  push: (id: string, table: string, mode: PushMode) =>
+    req<{ table: string; rows: number }>('POST', `/nodes/${id}/push`, { table, mode }),
   results: (
     id: string,
     params: { offset: number; limit: number; sort?: string; desc?: boolean },
@@ -125,6 +196,14 @@ export const api = {
   },
   bqStatus: () => req<BqStatus>('GET', '/bq/status'),
   dryRun: (sql: string, signal?: AbortSignal) => req<DryRun>('POST', '/bq/dry-run', { sql }, signal),
+  bqProjects: () => req<{ billing: string | null; projects: string[] }>('GET', '/bq/projects'),
+  bqDatasets: (project: string) =>
+    req<{ id: string; location: string | null }[]>('GET', `/bq/datasets?${qs({ project })}`),
+  bqTables: (project: string, dataset: string) =>
+    req<{ id: string; type: string }[]>('GET', `/bq/tables?${qs({ project, dataset })}`),
+  bqTable: (id: string) => req<BqTableInfo>('GET', `/bq/table?${qs({ id })}`),
+  bqPreview: (id: string, limit = 100) =>
+    req<{ columns: Column[]; rows: unknown[][] }>('GET', `/bq/preview?${qs({ id, limit })}`),
   getSettings: () => req<Settings>('GET', '/settings'),
   putSettings: (s: Settings) => req<Settings>('PUT', '/settings', s),
 }

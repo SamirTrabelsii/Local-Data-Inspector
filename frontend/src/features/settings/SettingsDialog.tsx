@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button, Dialog } from '../../components/ui'
 import { api, type Settings } from '../../lib/api'
+import { catalogKeys } from '../../lib/catalog'
 import { queryClient } from '../../lib/queryClient'
 import { useUi } from '../../lib/store'
 
@@ -28,16 +29,21 @@ export function SettingsDialog() {
   const status = useQuery({ queryKey: ['bq-status'], queryFn: api.bqStatus, staleTime: 5 * 60_000 })
   const [form, setForm] = useState<Settings | null>(null)
   const [saving, setSaving] = useState(false)
+  const [pinned, setPinned] = useState('')
 
   useEffect(() => {
-    if (open && settings.data) setForm(settings.data)
+    if (open && settings.data) {
+      setForm(settings.data)
+      setPinned(settings.data.bq_pinned_projects.join(', '))
+    }
   }, [open, settings.data])
 
   const save = async () => {
     if (!form) return
     setSaving(true)
     try {
-      await api.putSettings(form)
+      await api.putSettings({ ...form, bq_pinned_projects: pinned.split(/[\s,]+/).filter(Boolean) })
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.all }) // reloads in the background
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['settings'] }),
         queryClient.invalidateQueries({ queryKey: ['bq-status'] }),
@@ -86,7 +92,10 @@ export function SettingsDialog() {
           {status.data?.ok ? (
             <div className="flex items-center gap-2">
               <span className="size-2 rounded-full bg-ok" />
-              <span className="text-fg">Authenticated with Application Default Credentials</span>
+              <span className="text-fg">
+                Authenticated with Application Default Credentials
+                {status.data.account && <span className="text-muted"> as {status.data.account}</span>}
+              </span>
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -103,7 +112,10 @@ export function SettingsDialog() {
         </div>
 
         <div className="grid grid-cols-2 gap-4">
-          <Field label="BigQuery project" hint={`Billing project for jobs. Empty = ${status.data?.project ?? 'gcloud default'}`}>
+          <Field
+            label="BigQuery project"
+            hint={`Billing project for jobs. Empty = ${status.data?.project ?? 'gcloud default'}`}
+          >
             <input
               className={inputCls + ' font-mono'}
               placeholder="my-gcp-project"
@@ -119,6 +131,19 @@ export function SettingsDialog() {
               onChange={(e) => set('bq_location', e.target.value.trim())}
             />
           </Field>
+          <div className="col-span-2">
+            <Field
+              label="Pinned projects"
+              hint="Shown in the BigQuery browser next to the billing project. Comma separated."
+            >
+              <input
+                className={inputCls + ' font-mono'}
+                placeholder="bigquery-public-data, other-project"
+                value={pinned}
+                onChange={(e) => setPinned(e.target.value)}
+              />
+            </Field>
+          </div>
           <Field label="Hard cap per query (GiB)" hint="maximum_bytes_billed, enforced by BigQuery">
             {gb('max_bytes_billed')}
           </Field>

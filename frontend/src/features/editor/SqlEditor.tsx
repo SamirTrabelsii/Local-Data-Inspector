@@ -6,8 +6,10 @@ import { EditorView, keymap } from '@codemirror/view'
 import { tags as t } from '@lezer/highlight'
 import CodeMirror from '@uiw/react-codemirror'
 import { useMemo, useRef, useState } from 'react'
+import { bqCompletions } from './bqComplete'
 
 const BigQuerySQL = SQLDialect.define({ ...StandardSQL.spec, identifierQuotes: '`' })
+const bigQueryMetadata = BigQuerySQL.language.data.of({ autocomplete: bqCompletions })
 
 const theme = EditorView.theme(
   {
@@ -67,6 +69,7 @@ export function SqlEditor({ value, onChange, onRun, dialect, schema }: Props) {
   const extensions = useMemo(
     () => [
       sql({ dialect: dialect === 'bigquery' ? BigQuerySQL : PostgreSQL, schema, upperCaseKeywords: true }),
+      dialect === 'bigquery' ? bigQueryMetadata : [],
       syntaxHighlighting(highlight),
       EditorView.lineWrapping,
       Prec.highest(

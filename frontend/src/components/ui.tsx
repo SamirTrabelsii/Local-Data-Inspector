@@ -1,8 +1,16 @@
 import clsx from 'clsx'
-import { Cloud, Sparkles, X } from 'lucide-react'
-import { type ButtonHTMLAttributes, type ReactNode, useEffect } from 'react'
+import { Cloud, FileSpreadsheet, type LucideIcon, Sparkles, Table2, X } from 'lucide-react'
+import {
+  type ButtonHTMLAttributes,
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { createPortal } from 'react-dom'
-import type { NodeKind, NodeStatus } from '../lib/api'
+import type { NodeKind, NodeStatus, SourceType } from '../lib/api'
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger'
 
@@ -19,7 +27,11 @@ export function Button({
   size = 'md',
   className,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: 'sm' | 'md' | 'icon' }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  ref?: Ref<HTMLButtonElement>
+  variant?: Variant
+  size?: 'sm' | 'md' | 'icon'
+}) {
   return (
     <button
       type="button"
@@ -48,8 +60,25 @@ export const Kbd = ({ children, className }: { children: ReactNode; className?: 
   </kbd>
 )
 
-export function KindIcon({ kind, size = 'md' }: { kind: NodeKind; size?: 'sm' | 'md' }) {
-  const Icon = kind === 'source' ? Cloud : Sparkles
+const sourceIcons: Record<SourceType, LucideIcon> = { bq_query: Cloud, bq_table: Table2, file: FileSpreadsheet }
+
+export const sourceLabel = (t: SourceType | null, format?: string) =>
+  t === 'bq_table'
+    ? 'BigQuery table'
+    : t === 'file'
+      ? `${format === 'excel' ? 'Excel' : (format ?? '').toUpperCase()} file`
+      : 'BigQuery source'
+
+export function KindIcon({
+  kind,
+  sourceType,
+  size = 'md',
+}: {
+  kind: NodeKind
+  sourceType?: SourceType | null
+  size?: 'sm' | 'md'
+}) {
+  const Icon = kind === 'source' ? sourceIcons[sourceType ?? 'bq_query'] : Sparkles
   return (
     <div
       className={clsx(
@@ -132,5 +161,76 @@ export function Dialog({
       </div>
     </div>,
     document.body,
+  )
+}
+
+export type MenuItem =
+  { label: ReactNode; icon?: LucideIcon; hint?: string; onSelect: () => void; disabled?: boolean } | 'separator'
+
+/** A small dropdown, portalled so scrolling containers don't clip it. */
+export function Menu({ trigger, items, title }: { trigger: ReactNode; items: MenuItem[]; title?: string }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null)
+  const btn = useRef<HTMLButtonElement>(null)
+  const pop = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    if (!open || !btn.current) return
+    const r = btn.current.getBoundingClientRect()
+    setPos({ top: r.bottom + 6, right: window.innerWidth - r.right })
+  }, [open])
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!pop.current?.contains(e.target as Node) && !btn.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  return (
+    <>
+      <Button ref={btn} variant="ghost" size="sm" onClick={() => setOpen((o) => !o)} title={title} aria-expanded={open}>
+        {trigger}
+      </Button>
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={pop}
+            role="menu"
+            className="fixed z-50 min-w-56 rounded-xl border border-line2 bg-panel2 p-1 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)]"
+            style={pos}
+          >
+            {items.map((item, i) =>
+              item === 'separator' ? (
+                <div key={i} className="my-1 h-px bg-line" />
+              ) : (
+                <button
+                  key={i}
+                  type="button"
+                  role="menuitem"
+                  disabled={item.disabled}
+                  onClick={() => {
+                    setOpen(false)
+                    item.onSelect()
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-fg transition-colors hover:bg-panel3 disabled:pointer-events-none disabled:opacity-45"
+                >
+                  {item.icon && <item.icon className="size-3.5 shrink-0 text-muted" />}
+                  <span className="flex-1">{item.label}</span>
+                  {item.hint && <span className="text-[11px] text-faint">{item.hint}</span>}
+                </button>
+              ),
+            )}
+          </div>,
+          document.body,
+        )}
+    </>
   )
 }

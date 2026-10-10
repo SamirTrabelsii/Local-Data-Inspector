@@ -1,7 +1,8 @@
 import { toast } from 'sonner'
 import { api, type DryRun, type WNode } from './api'
 import { fmtBytes, fmtUsd } from './format'
-import { queryClient, refreshWorkspace } from './queryClient'
+import { catalogQueries } from './catalog'
+import { cachedNode, queryClient, refreshWorkspace } from './queryClient'
 import { confirmDialog, flushDraft, useDrafts } from './store'
 
 export const dryRunKey = (sql: string) => ['dryrun', sql.trim()] as const
@@ -13,10 +14,69 @@ export const fetchDryRun = (sql: string) =>
     staleTime: 60_000,
   })
 
+async function start(node: WNode) {
+  try {
+    await api.run(node.id)
+  } catch (e) {
+    toast.error('Could not start run', { description: (e as Error).message })
+    return
+  }
+  await refreshWorkspace()
+}
+
+/** Table reads are free of query costs, but can be big: confirm above the same threshold as queries. */
+async function runTableSource(node: WNode) {
+  const table = node.config.table
+  if (!table) {
+    toast.error('Pick a table to read first')
+    return
+  }
+  try {
+    const [info, settings] = await Promise.all([
+      queryClient.fetchQuery(catalogQueries.table(table)),
+      queryClient.fetchQuery({ queryKey: ['settings'], queryFn: api.getSettings }),
+    ])
+    if (!['TABLE', 'SNAPSHOT', 'EXTERNAL'].includes(info.type)) {
+      toast.error(`${table} is a ${info.type.toLowerCase()}`, {
+        description: "Views can't be read directly. Use a query source for it.",
+      })
+      return
+    }
+    const bytes = info.num_bytes ?? 0
+    if (bytes > settings.confirm_above_bytes) {
+      const ok = await confirmDialog({
+        title: 'Copy this table to your machine?',
+        body: (
+          <div className="space-y-3">
+            <p>
+              <b className="text-fg">{table}</b> holds <b className="text-fg">{fmtBytes(bytes)}</b>
+              {node.config.columns?.length || node.config.row_filter
+                ? ' before your column selection and row filter.'
+                : '.'}
+            </p>
+            <p className="text-faint">
+              It's read with the BigQuery Storage API: no query job and no analysis cost, but it uses your Storage API
+              read quota and local disk.
+            </p>
+          </div>
+        ),
+        confirmLabel: 'Read table',
+      })
+      if (!ok) return
+    }
+  } catch (e) {
+    toast.error('Could not read the table', { description: (e as Error).message })
+    return
+  }
+  await start(node)
+}
+
 /** Source runs cost money: dry-run first, refuse above the cap, confirm above the threshold. */
 export async function runNode(node: WNode) {
   const sql = useDrafts.getState().drafts[node.id] ?? node.sql
   await flushDraft(node.id)
+  if (node.source_type === 'bq_table') return runTableSource(cachedNode(node.id) ?? node)
+  if (node.source_type === 'file') return start(node)
   if (!sql.trim()) {
     toast.error('Write some SQL first')
     return
@@ -42,9 +102,8 @@ export async function runNode(node: WNode) {
         body: (
           <div className="space-y-3">
             <p>
-              BigQuery estimates this query will process{' '}
-              <b className="text-fg">{fmtBytes(dr.bytes_processed)}</b>, about{' '}
-              <b className="text-fg">{fmtUsd(dr.estimated_cost_usd)}</b> at on-demand pricing.
+              BigQuery estimates this query will process <b className="text-fg">{fmtBytes(dr.bytes_processed)}</b>,
+              about <b className="text-fg">{fmtUsd(dr.estimated_cost_usd)}</b> at on-demand pricing.
             </p>
             <p className="text-faint">
               Hard cap: {fmtBytes(dr.max_bytes_billed)}. Once cached, every downstream transform is free.
@@ -57,11 +116,15 @@ export async function runNode(node: WNode) {
     }
   }
 
+  await start(node)
+}
+
+export async function cancelNode(node: WNode) {
   try {
-    await api.run(node.id)
+    const { cancelled } = await api.cancel(node.id)
+    if (cancelled) toast(`Cancelling ${node.name}...`, { description: 'The previous result is kept.' })
   } catch (e) {
-    toast.error('Could not start run', { description: (e as Error).message })
-    return
+    toast.error('Could not cancel', { description: (e as Error).message })
   }
   await refreshWorkspace()
 }
