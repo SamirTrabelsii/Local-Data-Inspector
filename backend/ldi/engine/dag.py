@@ -1,6 +1,7 @@
 """Pure graph logic: ordering, cycle checks, staleness."""
 
 import hashlib
+import json
 from collections import defaultdict, deque
 
 Edge = tuple[str, str]  # (source, target)
@@ -8,6 +9,14 @@ Edge = tuple[str, str]  # (source, target)
 
 def sql_hash(sql: str) -> str:
     return hashlib.sha256(sql.strip().encode()).hexdigest()
+
+
+def node_hash(node: dict) -> str:
+    """Fingerprint of what a node computes: its SQL, plus its config for table / file sources."""
+    cfg = node.get("config") or {}
+    if not cfg:
+        return sql_hash(node["sql"])  # same as before configs existed, so old runs stay fresh
+    return hashlib.sha256((node["sql"].strip() + "\0" + json.dumps(cfg, sort_keys=True)).encode()).hexdigest()
 
 
 def parents_map(edges: list[Edge]) -> dict[str, list[str]]:
@@ -76,7 +85,7 @@ def compute_stale(nodes: list[dict], edges: list[Edge], runs: dict[str, dict]) -
         ps = parents.get(nid, [])
         current_inputs = {p: runs[p]["finished_at"] if p in runs else None for p in ps}
         stale[nid] = (
-            run["sql_hash"] != sql_hash(by_id[nid]["sql"])
+            run["sql_hash"] != node_hash(by_id[nid])
             or run["inputs"] != current_inputs
             or any(stale.get(p, True) for p in ps)
         )

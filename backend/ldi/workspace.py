@@ -35,7 +35,10 @@ def snapshot(running: set[str]) -> dict:
                 "inputs": [names[p] for p in parents.get(n["id"], [])],
                 "result": None
                 if run is None
-                else {k: run[k] for k in ("row_count", "columns", "exec_ms", "bytes_processed", "bytes_billed", "finished_at")},
+                else {
+                    k: run[k]
+                    for k in ("row_count", "columns", "exec_ms", "bytes_processed", "bytes_billed", "finished_at")
+                },
             }
         )
     return {"nodes": out, "edges": [{"source": s, "target": t} for s, t in edges]}

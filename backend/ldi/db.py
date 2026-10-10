@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     kind       TEXT NOT NULL CHECK (kind IN ('source', 'transform')),
     name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
     sql        TEXT NOT NULL DEFAULT '',
+    source_type TEXT,                      -- sources only: bq_query | bq_table | file
+    config     TEXT NOT NULL DEFAULT '{}', -- json, per source_type (table to read, uploaded file...)
     pos_x      REAL NOT NULL DEFAULT 0,
     pos_y      REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -57,7 +59,14 @@ DEFAULT_SETTINGS: dict = {
     "max_bytes_billed": 50 * GIB,  # hard cap enforced by BigQuery on every Source run
     "confirm_above_bytes": 1 * GIB,  # UI asks for confirmation above this estimate
     "price_per_tib_usd": 6.25,  # on-demand price used for estimates
+    "bq_pinned_projects": [],  # extra projects shown in the schema browser (e.g. bigquery-public-data)
 }
+
+# Columns added after the first release, applied to existing workspaces on startup.
+MIGRATIONS = [
+    ("nodes", "source_type", "ALTER TABLE nodes ADD COLUMN source_type TEXT"),
+    ("nodes", "config", "ALTER TABLE nodes ADD COLUMN config TEXT NOT NULL DEFAULT '{}'"),
+]
 
 
 @contextmanager
@@ -76,6 +85,10 @@ def init() -> None:
     with connect() as con:
         con.execute("PRAGMA journal_mode = WAL")
         con.executescript(SCHEMA)
+        for table, column, ddl in MIGRATIONS:
+            if column not in {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}:
+                con.execute(ddl)
+        con.execute("UPDATE nodes SET source_type = 'bq_query' WHERE kind = 'source' AND source_type IS NULL")
 
 
 def now() -> str:
