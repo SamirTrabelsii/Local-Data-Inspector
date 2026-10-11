@@ -26,7 +26,32 @@ def _run_source(node: dict, out, token: Token) -> dict:
         return {}
     if not node["sql"].strip():
         raise ValueError("SQL is empty")
-    return source_bq.run_to_parquet(node["sql"], db.get_settings(), out, token)
+    sql = source_bq.effective_sql(node["sql"], node["config"].get("sample_percent"))
+    return source_bq.run_to_parquet(sql, db.get_settings(), out, token)
+
+
+def _record_savings(node: dict, stats: dict) -> None:
+    """Ledger entry for a finished run: what a BigQuery run billed, or what a free transform run avoided."""
+    price = db.get_settings()["price_per_tib_usd"]
+    if node["kind"] == "source":
+        if node["source_type"] == "bq_query":
+            repo.add_ledger(
+                node["id"], node["name"], "bq",
+                bytes_billed=stats.get("bytes_billed") or 0, bytes_avoided=0, price_per_tib_usd=price,
+            )  # fmt: skip
+        return
+    # A transform reads cached data; without the cache each run would have re-queried its upstream sources.
+    edges = repo.list_edges()
+    ancestors = dag.ancestors(edges, node["id"])
+    runs = repo.get_runs()
+    avoided = sum(
+        (runs[n["id"]]["bytes_processed"] or 0)
+        for n in repo.list_nodes()
+        if n["id"] in ancestors and n["kind"] == "source" and n["source_type"] != "file" and n["id"] in runs
+    )
+    repo.add_ledger(
+        node["id"], node["name"], "local", bytes_billed=0, bytes_avoided=avoided, price_per_tib_usd=price
+    )
 
 
 def run_node(node_id: str, token: Token | None = None) -> None:
@@ -70,6 +95,10 @@ def run_node(node_id: str, token: Token | None = None) -> None:
         exec_ms=exec_ms,
         **stats,
     )
+    try:
+        _record_savings(node, stats)
+    except Exception:  # bookkeeping must never fail a run that already succeeded
+        log.exception("Could not record savings for %s", node["name"])
     store.cleanup(node_id, keep=out)
 
 

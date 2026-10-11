@@ -38,6 +38,18 @@ class EdgeCreate(BaseModel):
 
 class DryRunRequest(BaseModel):
     sql: str
+    sample_percent: float | None = Field(default=None, gt=0, lt=100)
+    node_id: str | None = None  # lets the dry run compare against this node's previous scan
+
+
+class PinRequest(BaseModel):
+    pinned: bool
+
+
+class CleanRequest(BaseModel):
+    scope: Literal["unpinned", "stale", "older_than"] = "unpinned"
+    older_than_days: int = Field(default=30, ge=0)
+    preview: bool = False  # only report what would be removed
 
 
 class Settings(BaseModel):

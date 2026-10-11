@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException, Query
 
-from .. import db
+from .. import db, repo
 from ..engine import source_bq
 from ..models import DryRunRequest, Settings
 
@@ -24,7 +24,11 @@ def bq_status() -> dict:
 def bq_dry_run(body: DryRunRequest) -> dict:
     if not body.sql.strip():
         raise HTTPException(400, "SQL is empty")
-    return _bq(lambda: source_bq.dry_run(body.sql, db.get_settings()))
+    previous = None
+    if body.node_id:
+        run = repo.get_run(body.node_id)
+        previous = run["bytes_processed"] if run else None
+    return _bq(lambda: source_bq.dry_run(body.sql, db.get_settings(), body.sample_percent, previous))
 
 
 @router.get("/bq/projects")

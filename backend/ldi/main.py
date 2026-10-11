@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, config, db, repo
-from .api import bigquery, files, nodes, results
+from .api import bigquery, cache, files, nodes, results
 from .engine.executor import Busy
 
 
@@ -33,7 +33,7 @@ def create_app() -> FastAPI:
     async def _busy(_: Request, exc: Exception):
         return JSONResponse({"detail": str(exc)}, status_code=409)
 
-    for module in (nodes, results, files, bigquery):
+    for module in (nodes, results, files, bigquery, cache):
         app.include_router(module.router)
 
     dist = config.frontend_dist()
