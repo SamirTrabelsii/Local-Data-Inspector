@@ -3,6 +3,7 @@ from collections.abc import Callable
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import db, repo
+from ..engine import params as params_engine
 from ..engine import source_bq
 from ..models import DryRunRequest, Settings
 
@@ -28,7 +29,11 @@ def bq_dry_run(body: DryRunRequest) -> dict:
     if body.node_id:
         run = repo.get_run(body.node_id)
         previous = run["bytes_processed"] if run else None
-    return _bq(lambda: source_bq.dry_run(body.sql, db.get_settings(), body.sample_percent, previous))
+    try:
+        sql, query_params = params_engine.bind_bigquery(body.sql, repo.list_params())
+    except params_engine.ParamError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return _bq(lambda: source_bq.dry_run(sql, db.get_settings(), body.sample_percent, previous, query_params))
 
 
 @router.get("/bq/projects")

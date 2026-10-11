@@ -130,9 +130,19 @@ def effective_sql(sql: str, sample_percent: float | None) -> str:
     return sampled
 
 
-def dry_run(sql: str, settings: dict, sample_percent: float | None = None, previous_bytes: int | None = None) -> dict:
+def _query_params(specs: list[tuple[str, str, object]] | None) -> list[bigquery.ScalarQueryParameter]:
+    return [bigquery.ScalarQueryParameter(name, type_, value) for name, type_, value in specs or []]
+
+
+def dry_run(
+    sql: str,
+    settings: dict,
+    sample_percent: float | None = None,
+    previous_bytes: int | None = None,
+    query_params: list[tuple[str, str, object]] | None = None,
+) -> dict:
     run_sql = effective_sql(sql, sample_percent)
-    cfg = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+    cfg = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False, query_parameters=_query_params(query_params))
     job = client(settings).query(run_sql, job_config=cfg)
     processed = job.total_bytes_processed or 0
     try:
@@ -215,11 +225,19 @@ def _result_batches(job: bigquery.QueryJob, settings: dict) -> Iterator[pa.Recor
         yield from batches
 
 
-def run_to_parquet(sql: str, settings: dict, out: Path, token: Token | None = None) -> dict:
+def run_to_parquet(
+    sql: str,
+    settings: dict,
+    out: Path,
+    token: Token | None = None,
+    query_params: list[tuple[str, str, object]] | None = None,
+) -> dict:
     """Execute with a hard bytes-billed cap; stream Arrow batches to disk. Cancel kills the BigQuery job."""
     token = token or Token()
     token.check()
-    cfg = bigquery.QueryJobConfig(maximum_bytes_billed=int(settings["max_bytes_billed"]))
+    cfg = bigquery.QueryJobConfig(
+        maximum_bytes_billed=int(settings["max_bytes_billed"]), query_parameters=_query_params(query_params)
+    )
     job = client(settings).query(sql, job_config=cfg)
     with token.on_cancel(lambda: _cancel_job(job)):
         _wait(job, token)

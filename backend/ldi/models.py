@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class NodeCreate(BaseModel):
-    kind: Literal["source", "transform"]
+    kind: Literal["source", "transform", "chart"]
     # File sources are created by uploading the file (POST /api/files), not here.
     source_type: Literal["bq_query", "bq_table"] = "bq_query"
     name: str | None = None

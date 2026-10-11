@@ -26,7 +26,7 @@ def create_node(body: NodeCreate) -> dict:
         body.y,
         body.inputs,
         source_type=body.source_type,
-        config=repo.clean_config(body.source_type, body.config),
+        config=body.config if body.kind == "chart" else repo.clean_config(body.source_type, body.config),
         name_hint=body.name_hint,
     )
 
@@ -68,7 +68,8 @@ def delete_edge(source: str, target: str) -> Response:
 
 @router.post("/nodes/{node_id}/run", status_code=202)
 def run_node(node_id: str) -> dict:
-    repo.get_node(node_id)
+    if repo.get_node(node_id)["kind"] == "chart":
+        raise HTTPException(400, "Charts draw themselves from their input; there is nothing to run")
     executor.submit([node_id])
     return {"queued": [node_id]}
 
@@ -87,7 +88,8 @@ def run_downstream(node_id: str) -> dict:
     node = repo.get_node(node_id)
     nodes = repo.list_nodes()
     edges = repo.list_edges()
-    targets = dag.descendants(edges, node_id)
+    kinds = {n["id"]: n["kind"] for n in nodes}
+    targets = {t for t in dag.descendants(edges, node_id) if kinds[t] != "chart"}
     if node["kind"] == "transform":
         targets.add(node_id)
     order = [n for n in dag.topo_order([n["id"] for n in nodes], edges) if n in targets]
