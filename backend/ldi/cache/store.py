@@ -74,6 +74,27 @@ def read_page(path: Path, offset: int, limit: int, sort: str | None, desc: bool)
     return {"columns": columns, "rows": [[to_json(v) for v in row] for row in rows]}
 
 
+EXCEL_MAX_ROWS = 1_048_575  # one sheet, minus the header row
+
+EXPORT_OPTIONS = {
+    "csv": "FORMAT csv, HEADER true",
+    "tsv": "FORMAT csv, HEADER true, DELIMITER '\t'",
+    "xlsx": "FORMAT xlsx, HEADER true",
+}
+
+
+def export(path: Path, fmt: str, dest: Path, limit: int | None = None) -> None:
+    """Write a cached result as CSV / TSV / XLSX (Parquet results are served as-is)."""
+    limit_sql = f" LIMIT {int(limit)}" if limit else ""
+    with duckdb.connect() as con:
+        if fmt == "xlsx":
+            con.execute("INSTALL excel; LOAD excel")
+        con.execute(
+            f"COPY (SELECT * FROM read_parquet({quote_path(path)}){limit_sql}) TO {quote_path(dest)} "
+            f"({EXPORT_OPTIONS[fmt]})"
+        )
+
+
 MAX_SAFE_INT = 2**53
 
 

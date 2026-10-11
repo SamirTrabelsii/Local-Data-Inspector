@@ -1,9 +1,10 @@
 import { Handle, type Node, type NodeProps, Position } from '@xyflow/react'
 import clsx from 'clsx'
-import { Columns3, Rows3, Timer } from 'lucide-react'
+import { Columns3, Rows3, Square, Timer } from 'lucide-react'
 import type { WNode } from '../../lib/api'
 import { fmtBytes, fmtCompact, fmtDateTime, fmtMs, timeAgo, useNow } from '../../lib/format'
-import { KindIcon, StatusPill } from '../../components/ui'
+import { cancelNode } from '../../lib/run'
+import { KindIcon, StatusPill, sourceLabel } from '../../components/ui'
 
 export type LdiNode = Node<{ node: WNode }, 'ldi'>
 
@@ -35,12 +36,27 @@ export function NodeCard({ data, selected }: NodeProps<LdiNode>) {
       {n.kind === 'transform' && <Handle type="target" position={Position.Left} />}
 
       <div className="flex items-center gap-2.5 px-3 pt-3 pb-2.5">
-        <KindIcon kind={n.kind} />
+        <KindIcon kind={n.kind} sourceType={n.source_type} />
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-[13px] font-medium text-fg">{n.name}</div>
-          <div className="text-[11px] text-faint">{n.kind === 'source' ? 'BigQuery source' : 'DuckDB transform'}</div>
+          <div className="truncate text-[11px] text-faint">
+            {n.kind === 'source' ? sourceLabel(n.source_type, n.config.format) : 'DuckDB transform'}
+          </div>
         </div>
         <StatusPill status={n.status} />
+        {n.status === 'running' && (
+          <button
+            type="button"
+            title="Cancel this run"
+            onClick={(e) => {
+              e.stopPropagation()
+              void cancelNode(n)
+            }}
+            className="nodrag -mr-1 grid size-6 place-items-center rounded-md text-muted transition-colors hover:bg-err/15 hover:text-err"
+          >
+            <Square className="size-3 fill-current" />
+          </button>
+        )}
       </div>
 
       <div className="border-t border-line px-3 py-2.5">
@@ -55,8 +71,10 @@ export function NodeCard({ data, selected }: NodeProps<LdiNode>) {
               <span title={fmtDateTime(r.finished_at)}>
                 {n.kind === 'source' ? 'Refreshed' : 'Ran'} {timeAgo(r.finished_at, now)}
               </span>
-              {n.kind === 'source' ? (
+              {n.source_type === 'bq_query' ? (
                 r.bytes_billed != null && <span>{fmtBytes(r.bytes_billed)} billed</span>
+              ) : n.source_type === 'bq_table' ? (
+                <span>no query cost</span>
               ) : (
                 <span className="text-ok/70">free</span>
               )}

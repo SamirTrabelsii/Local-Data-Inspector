@@ -1,18 +1,29 @@
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
-import { Settings, Workflow } from 'lucide-react'
+import { PanelLeft, Settings, Workflow } from 'lucide-react'
 import { Button } from '../components/ui'
 import { api } from '../lib/api'
 import { useUi } from '../lib/store'
 
 export function TopBar() {
   const openSettings = useUi((s) => s.setSettingsOpen)
+  const explorerOpen = useUi((s) => s.explorerOpen)
+  const toggleExplorer = useUi((s) => s.toggleExplorer)
   const status = useQuery({ queryKey: ['bq-status'], queryFn: api.bqStatus, staleTime: 5 * 60_000 })
   const s = status.data
 
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-line bg-panel px-4">
       <div className="flex items-center gap-2.5">
+        <Button
+          variant="ghost"
+          size="icon"
+          className={clsx('-ml-2 size-7', explorerOpen && 'text-fg')}
+          onClick={toggleExplorer}
+          title={explorerOpen ? 'Hide the BigQuery browser' : 'Show the BigQuery browser'}
+        >
+          <PanelLeft className="size-4" />
+        </Button>
         <div className="grid size-7 place-items-center rounded-lg bg-gradient-to-br from-accent to-src/80 shadow-[0_0_20px_-4px_rgba(139,124,255,0.6)]">
           <Workflow className="size-4 text-white" strokeWidth={2.25} />
         </div>
@@ -23,7 +34,11 @@ export function TopBar() {
         <button
           type="button"
           onClick={() => openSettings(true)}
-          title={s?.ok ? 'BigQuery billing project' : (s?.hint ?? s?.error ?? '')}
+          title={
+            s?.ok
+              ? `BigQuery billing project${s.account ? `\nSigned in as ${s.account}` : ''}`
+              : (s?.hint ?? s?.error ?? '')
+          }
           className="flex h-7 items-center gap-2 rounded-full border border-line2 bg-panel2 px-3 text-xs transition-colors hover:border-[#3a4052]"
         >
           <span
@@ -35,7 +50,10 @@ export function TopBar() {
           {status.isLoading ? (
             <span className="text-muted">Checking BigQuery...</span>
           ) : s?.ok ? (
-            <span className="font-mono text-muted">{s.project ?? 'no project set'}</span>
+            <>
+              <span className="font-mono text-muted">{s.project ?? 'no project set'}</span>
+              {s.account && <span className="hidden text-faint lg:inline">{s.account}</span>}
+            </>
           ) : (
             <span className="text-err">BigQuery not authenticated</span>
           )}

@@ -20,6 +20,19 @@ def cache_dir() -> Path:
     return d
 
 
+def files_dir() -> Path:
+    """Files dropped into the UI (file sources), one directory per upload."""
+    d = data_dir() / "files"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def exports_dir() -> Path:
+    d = data_dir() / "exports"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def duckdb_tmp_dir() -> Path:
     d = data_dir() / "duckdb_tmp"
     d.mkdir(parents=True, exist_ok=True)

@@ -1,17 +1,30 @@
 import clsx from 'clsx'
-import { ArrowRight, Cloud, CircleAlert, GitFork, LoaderCircle, MousePointerClick, Play, Sparkles, Trash2 } from 'lucide-react'
+import {
+  ArrowRight,
+  CircleAlert,
+  Cloud,
+  FileSpreadsheet,
+  GitFork,
+  LoaderCircle,
+  MousePointerClick,
+  Play,
+  Sparkles,
+  Square,
+  Trash2,
+} from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import { toast } from 'sonner'
-import { Button, KindIcon, Kbd, StatusPill } from '../../components/ui'
+import { Button, KindIcon, Kbd, StatusPill, sourceLabel } from '../../components/ui'
 import { api, type WNode, type Workspace } from '../../lib/api'
 import { refreshWorkspace, useWorkspace } from '../../lib/queryClient'
-import { runDownstream, runNode } from '../../lib/run'
-import { confirmDialog, editDraft, useDrafts, useUi } from '../../lib/store'
+import { cancelNode, runDownstream, runNode } from '../../lib/run'
+import { confirmDialog, editDraft, flushAllDrafts, useDrafts, useUi } from '../../lib/store'
 import { SourceEstimate } from '../editor/SourceEstimate'
 import { SqlEditor } from '../editor/SqlEditor'
 import { ResultsTable } from '../results/ResultsTable'
 import { StatsBar } from '../results/StatsBar'
+import { FileSourceEditor, TableSourceEditor } from './SourceEditors'
 
 const isMac = navigator.platform.toUpperCase().includes('MAC')
 
@@ -38,8 +51,11 @@ function EmptyPanel() {
             and caches the result
           </div>
           <div className="flex items-center gap-2">
-            <Sparkles className="size-3.5 text-trf" /> <b className="font-medium text-fg">Transform</b> runs DuckDB SQL on
-            cached inputs, for free
+            <FileSpreadsheet className="size-3.5 text-src" /> Drop CSV, Parquet or Excel files on the canvas
+          </div>
+          <div className="flex items-center gap-2">
+            <Sparkles className="size-3.5 text-trf" /> <b className="font-medium text-fg">Transform</b> runs DuckDB SQL
+            on cached inputs, for free
           </div>
         </div>
       </div>
@@ -52,7 +68,7 @@ function descendantsOf(ws: Workspace, id: string): string[] {
   const stack = [id]
   while (stack.length) {
     const cur = stack.pop()!
-    for (const e of ws.edges) if (e.source === cur && !out.has(e.target)) out.add(e.target), stack.push(e.target)
+    for (const e of ws.edges) if (e.source === cur && !out.has(e.target)) (out.add(e.target), stack.push(e.target))
   }
   return [...out]
 }
@@ -98,11 +114,17 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
     <div className="flex h-full flex-col bg-panel">
       {/* header */}
       <div className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-3">
-        <KindIcon kind={node.kind} />
-        <div className="min-w-0 flex-1">
+        <KindIcon kind={node.kind} sourceType={node.source_type} />
+        <div className="min-w-32 flex-1">
           <NameInput node={node} hasDownstream={downstream.length > 0} />
-          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-faint">
-            {node.kind === 'source' ? 'BigQuery source · billed per run' : 'DuckDB transform · runs locally, free'}
+          <div className="mt-0.5 truncate text-[11px] text-faint">
+            {node.kind === 'transform'
+              ? 'DuckDB transform · runs locally, free'
+              : node.source_type === 'bq_query'
+                ? 'BigQuery source · billed per run'
+                : node.source_type === 'bq_table'
+                  ? 'BigQuery table · Storage API read, no query job'
+                  : `${sourceLabel('file', node.config.format)} · read locally by DuckDB, free`}
           </div>
         </div>
         <StatusPill status={node.status} />
@@ -116,15 +138,24 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
               <GitFork className="size-3.5 rotate-90" />
               Run downstream
               {staleDownstream > 0 && (
-                <span className="rounded-full bg-warn/15 px-1.5 text-[10px] font-semibold text-warn">{staleDownstream}</span>
+                <span className="rounded-full bg-warn/15 px-1.5 text-[10px] font-semibold text-warn">
+                  {staleDownstream}
+                </span>
               )}
             </Button>
           )}
-          <Button variant="primary" onClick={() => runNode(node)} disabled={running}>
-            {running ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5 fill-current" />}
-            {node.kind === 'source' ? (node.result ? 'Refresh' : 'Run') : 'Run'}
-            <Kbd>{isMac ? '⌘' : 'Ctrl'} ↵</Kbd>
-          </Button>
+          {running ? (
+            <Button onClick={() => cancelNode(node)} title="Stop this run (BigQuery job cancel / DuckDB interrupt)">
+              <Square className="size-3 fill-current text-err" />
+              Cancel
+            </Button>
+          ) : (
+            <Button variant="primary" onClick={() => runNode(node)}>
+              <Play className="size-3.5 fill-current" />
+              {node.kind === 'source' ? (node.result ? 'Refresh' : 'Run') : 'Run'}
+              <Kbd>{isMac ? '⌘' : 'Ctrl'} ↵</Kbd>
+            </Button>
+          )}
           <Button variant="ghost" size="icon" onClick={remove} disabled={running} title="Delete node">
             <Trash2 className="size-4" />
           </Button>
@@ -132,7 +163,7 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
       </div>
 
       <Group orientation="vertical" className="min-h-0 flex-1">
-        <Panel defaultSize="40" minSize={110}>
+        <Panel id="editor" defaultSize="40" minSize={110}>
           <div className="flex h-full flex-col">
             {node.kind === 'transform' && (
               <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line px-4 py-2 text-xs">
@@ -161,17 +192,27 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
               </div>
             )}
             <div className="min-h-0 flex-1 overflow-hidden">
-              <SqlEditor
-                value={sql}
-                onChange={(v) => editDraft(node.id, v)}
-                onRun={() => !running && runNode(node)}
-                dialect={node.kind === 'source' ? 'bigquery' : 'duckdb'}
-                schema={schema}
-              />
+              {node.source_type === 'bq_table' ? (
+                <TableSourceEditor node={node} />
+              ) : node.source_type === 'file' ? (
+                <FileSourceEditor node={node} />
+              ) : (
+                <SqlEditor
+                  value={sql}
+                  onChange={(v) => editDraft(node.id, v)}
+                  onRun={() => !running && runNode(node)}
+                  dialect={node.kind === 'source' ? 'bigquery' : 'duckdb'}
+                  schema={schema}
+                />
+              )}
             </div>
             <div className="flex h-8 shrink-0 items-center border-t border-line bg-panel2/50 px-4 text-[11px]">
-              {node.kind === 'source' ? (
+              {node.source_type === 'bq_query' ? (
                 <SourceEstimate sql={sql} />
+              ) : node.source_type === 'bq_table' ? (
+                <span className="text-faint">Read with the BigQuery Storage API · no query job, no analysis cost</span>
+              ) : node.source_type === 'file' ? (
+                <span className="text-faint">Local file · read by DuckDB</span>
               ) : (
                 <span className="text-faint">DuckDB SQL · inputs are views over their cached Parquet</span>
               )}
@@ -180,7 +221,7 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
           </div>
         </Panel>
         <Separator className="h-px" />
-        <Panel minSize={120}>
+        <Panel id="results" minSize={120}>
           <ResultsSection node={node} />
         </Panel>
       </Group>
@@ -195,13 +236,19 @@ function ResultsSection({ node }: { node: WNode }) {
       {node.status === 'error' && node.error && (
         <div className="flex shrink-0 gap-2 border-b border-err/20 bg-err/[0.07] px-4 py-2.5 text-xs text-err">
           <CircleAlert className="mt-px size-3.5 shrink-0" />
-          <pre className="max-h-28 min-w-0 flex-1 overflow-auto whitespace-pre-wrap font-mono leading-relaxed">{node.error}</pre>
+          <pre className="max-h-28 min-w-0 flex-1 overflow-auto whitespace-pre-wrap font-mono leading-relaxed">
+            {node.error}
+          </pre>
         </div>
       )}
       {node.status === 'running' && (
         <div className="flex shrink-0 items-center gap-2 border-b border-run/20 bg-run/[0.07] px-4 py-2 text-xs text-run">
           <LoaderCircle className="size-3.5 animate-spin" />
-          {node.kind === 'source' ? 'Running on BigQuery and caching locally...' : 'Running on DuckDB...'}
+          {node.source_type === 'bq_query'
+            ? 'Running on BigQuery and caching locally...'
+            : node.source_type === 'bq_table'
+              ? 'Reading the table from BigQuery...'
+              : 'Running on DuckDB...'}
           {r && <span className="text-run/70">showing the previous result meanwhile</span>}
         </div>
       )}
@@ -228,16 +275,43 @@ function ResultsSection({ node }: { node: WNode }) {
 
 function NameInput({ node, hasDownstream }: { node: WNode; hasDownstream: boolean }) {
   const [value, setValue] = useState(node.name)
+  /** Renaming rewrites references in direct downstream transforms; confirm when there are any. */
   const commit = async () => {
     const name = value.trim()
     if (name === node.name) return
     try {
+      await flushAllDrafts()
+      const affected = hasDownstream ? (await api.renamePreview(node.id, name)).affected : []
+      if (affected.length) {
+        const ok = await confirmDialog({
+          title: `Rename ${node.name} to ${name}?`,
+          body: (
+            <div className="space-y-3">
+              <p>These transforms read it by name. Their SQL will be updated:</p>
+              <ul className="space-y-1">
+                {affected.map((a) => (
+                  <li key={a.id} className="flex items-center gap-2">
+                    <span className="font-mono text-fg">{a.name}</span>
+                    <span className="text-faint">
+                      {a.references} {a.references === 1 ? 'reference' : 'references'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-faint">Strings, comments and column names are left alone. Results stay fresh.</p>
+            </div>
+          ),
+          confirmLabel: 'Rename and update',
+        })
+        if (!ok) {
+          setValue(node.name)
+          return
+        }
+      }
       await api.updateNode(node.id, { name })
       await refreshWorkspace()
-      if (hasDownstream)
-        toast.warning(`Renamed to ${name}`, {
-          description: `Downstream SQL that reads FROM ${node.name} needs to be updated.`,
-        })
+      if (affected.length)
+        toast.success(`Renamed to ${name}`, { description: `Updated ${affected.map((a) => a.name).join(', ')}` })
     } catch (e) {
       toast.error('Could not rename', { description: (e as Error).message })
       setValue(node.name)

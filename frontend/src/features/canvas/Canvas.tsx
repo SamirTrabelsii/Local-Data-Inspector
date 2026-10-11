@@ -15,18 +15,19 @@ import {
   useNodesInitialized,
   useReactFlow,
 } from '@xyflow/react'
-import { Cloud, Plus, Sparkles } from 'lucide-react'
+import { Cloud, FileSpreadsheet, Plus, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '../../components/ui'
 import { api, type NodeKind, type Workspace } from '../../lib/api'
 import { patchCachedNode, refreshWorkspace, useWorkspace } from '../../lib/queryClient'
 import { confirmDialog, useUi } from '../../lib/store'
+import { TABLE_DRAG_TYPE } from '../../lib/catalog'
 import { type LdiNode, NodeCard } from './NodeCard'
+import { NODE_W, useAddSources, usePlaceNode } from './placement'
 
 const nodeTypes = { ldi: NodeCard }
-const NODE_W = 264
-const NODE_H = 120
+const FILE_ACCEPT = '.csv,.tsv,.txt,.parquet,.xlsx,.json,.jsonl,.ndjson'
 
 const DEFAULT_SOURCE_SQL = 'SELECT\n  *\nFROM `project.dataset.table`\nLIMIT 1000\n'
 
@@ -41,6 +42,10 @@ export function Canvas() {
   const [nodes, setNodes] = useState<LdiNode[]>([])
   const [edges, setEdges] = useState<Edge[]>([])
   const fitted = useRef(false)
+  const place = usePlaceNode()
+  const addSources = useAddSources()
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [dropping, setDropping] = useState(false)
 
   // Merge server state into React Flow state, keeping local positions and measurements.
   useEffect(() => {
@@ -151,19 +156,8 @@ export function Canvas() {
     async (kind: NodeKind) => {
       const ws = data as Workspace
       const parent = kind === 'transform' ? ws.nodes.find((n) => n.id === selectedId) : undefined
-      let pos: { x: number; y: number }
-      if (parent) {
-        const p = rf.getNode(parent.id)?.position ?? { x: parent.x, y: parent.y }
-        pos = { x: p.x + NODE_W + 90, y: p.y }
-      } else {
-        const box = wrapper.current!.getBoundingClientRect()
-        const c = rf.screenToFlowPosition({ x: box.left + box.width / 2, y: box.top + box.height / 2 })
-        pos = { x: c.x - NODE_W / 2, y: c.y - NODE_H / 2 }
-      }
-      const taken = rf.getNodes().map((n) => n.position)
-      while (taken.some((t) => Math.abs(t.x - pos.x) < NODE_W * 0.6 && Math.abs(t.y - pos.y) < NODE_H)) {
-        pos = { ...pos, y: pos.y + NODE_H + 30 }
-      }
+      const p = parent && (rf.getNode(parent.id)?.position ?? { x: parent.x, y: parent.y })
+      const pos = place(p ? { x: p.x + NODE_W + 90, y: p.y } : undefined)
       const sql =
         kind === 'source'
           ? DEFAULT_SOURCE_SQL
@@ -178,13 +172,44 @@ export function Canvas() {
         toast.error('Could not create node', { description: (e as Error).message })
       }
     },
-    [data, rf, select, selectedId],
+    [data, rf, select, selectedId, place],
+  )
+
+  // Drop local files (file sources) or tables dragged from the BigQuery browser (table sources).
+  const accepts = (e: React.DragEvent) =>
+    e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(TABLE_DRAG_TYPE)
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    if (!accepts(e)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    setDropping(true)
+  }, [])
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    if (!wrapper.current?.contains(e.relatedTarget as Node | null)) setDropping(false)
+  }, [])
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      if (!accepts(e)) return
+      e.preventDefault()
+      setDropping(false)
+      const at = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+      const table = e.dataTransfer.getData(TABLE_DRAG_TYPE)
+      if (table) void addSources.table(table, at)
+      else void addSources.files([...e.dataTransfer.files], at)
+    },
+    [rf, addSources],
   )
 
   const selectedNode = data?.nodes.find((n) => n.id === selectedId)
 
   return (
-    <div ref={wrapper} className="relative h-full w-full">
+    <div
+      ref={wrapper}
+      className="relative h-full w-full"
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <ReactFlow<LdiNode, Edge>
         nodes={nodes}
         edges={edges}
@@ -225,6 +250,27 @@ export function Canvas() {
             <Button
               variant="ghost"
               size="sm"
+              onClick={() => fileInput.current?.click()}
+              title="Add a local CSV, Parquet, Excel or JSON file (or drop files on the canvas)"
+            >
+              <Plus className="size-3.5" />
+              <FileSpreadsheet className="size-3.5 text-src" />
+              File
+            </Button>
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              accept={FILE_ACCEPT}
+              className="hidden"
+              onChange={(e) => {
+                void addSources.files([...(e.target.files ?? [])])
+                e.target.value = ''
+              }}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => addNode('transform')}
               title={
                 selectedNode
@@ -249,13 +295,21 @@ export function Canvas() {
             </div>
             <h3 className="text-[15px] font-semibold tracking-tight">Start with a BigQuery source</h3>
             <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
-              Query BigQuery once, then cache the result locally. Every transform you chain after it runs on DuckDB
-              for free.
+              Query BigQuery once, then cache the result locally. Every transform you chain after it runs on DuckDB for
+              free. You can also drag a table from the browser on the left, or drop CSV, Parquet and Excel files here.
             </p>
             <Button variant="primary" className="mt-4" onClick={() => addNode('source')}>
               <Plus className="size-4" />
               New source
             </Button>
+          </div>
+        </div>
+      )}
+
+      {dropping && (
+        <div className="pointer-events-none absolute inset-3 z-10 grid place-items-center rounded-2xl border-2 border-dashed border-accent/60 bg-accent/[0.06]">
+          <div className="rounded-xl bg-panel/90 px-4 py-2.5 text-[13px] text-fg shadow-xl">
+            Drop to add as a source
           </div>
         </div>
       )}

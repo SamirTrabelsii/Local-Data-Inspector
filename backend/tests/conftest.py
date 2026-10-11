@@ -12,7 +12,7 @@ def client(tmp_path, monkeypatch):
     from ldi.engine import source_bq
     from ldi.main import create_app
 
-    def fake_bq(sql, settings, out):
+    def fake_bq(sql, settings, out, token=None):
         """Stand-in for BigQuery: the 'query' is ignored, a fixed table is returned."""
         table = pa.table({"id": [1, 2, 3, 4], "country": ["TN", "FR", "TN", "US"], "amount": [10.5, 20.0, 5.25, 7.0]})
         pq.write_table(table, out)
