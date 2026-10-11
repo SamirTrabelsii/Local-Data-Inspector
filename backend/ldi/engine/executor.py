@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .. import db, repo
 from ..cache import store
 from . import dag, source_bq, source_file, transform_duck
+from . import params as params_engine
 from .cancel import Cancelled, Token
 
 log = logging.getLogger(__name__)
@@ -17,7 +18,7 @@ class Busy(Exception):
     pass
 
 
-def _run_source(node: dict, out, token: Token) -> dict:
+def _run_source(node: dict, out, token: Token, all_params: dict) -> dict:
     source_type = node["source_type"]
     if source_type == "bq_table":
         return source_bq.read_table_to_parquet(node["config"], db.get_settings(), out, token)
@@ -26,8 +27,10 @@ def _run_source(node: dict, out, token: Token) -> dict:
         return {}
     if not node["sql"].strip():
         raise ValueError("SQL is empty")
-    sql = source_bq.effective_sql(node["sql"], node["config"].get("sample_percent"))
-    return source_bq.run_to_parquet(sql, db.get_settings(), out, token)
+    sql, query_params = params_engine.bind_bigquery(node["sql"], all_params)
+    sql = source_bq.effective_sql(sql, node["config"].get("sample_percent"))
+    extra = {"query_params": query_params} if query_params else {}
+    return source_bq.run_to_parquet(sql, db.get_settings(), out, token, **extra)
 
 
 def _record_savings(node: dict, stats: dict) -> None:
@@ -54,19 +57,38 @@ def _record_savings(node: dict, stats: dict) -> None:
     )
 
 
+def node_dialect(node: dict) -> str | None:
+    """Which SQL dialect carries the node's {{parameters}}; None when the node has no SQL."""
+    if node["kind"] == "transform":
+        return "duckdb"
+    if node["kind"] == "source" and node["source_type"] == "bq_query":
+        return "bigquery"
+    return None
+
+
+def run_params(node: dict, all_params: dict) -> dict[str, str | None]:
+    """The parameters this node's SQL uses, as {name: fingerprint}; a run stores this to detect later changes."""
+    dialect = node_dialect(node)
+    return params_engine.snapshot(node["sql"], all_params, dialect) if dialect else {}
+
+
 def run_node(node_id: str, token: Token | None = None) -> None:
     token = token or Token()
     node = repo.get_node(node_id)
     sql = node["sql"]
+    if node["kind"] == "chart":
+        raise ValueError("Charts draw themselves from their input; there is nothing to run")
     if node["kind"] == "transform" and not sql.strip():
         raise ValueError("SQL is empty")
+    all_params = repo.list_params()  # read once: the run binds and records the same values
+    used = run_params(node, all_params)
     out = store.new_result_path(node_id)
     started = time.perf_counter()
     inputs: dict[str, str] = {}
     stats: dict = {}
     try:
         if node["kind"] == "source":
-            stats = _run_source(node, out, token)
+            stats = _run_source(node, out, token, all_params)
         else:
             names = {n["id"]: n["name"] for n in repo.list_nodes()}
             runs = repo.get_runs()
@@ -77,6 +99,7 @@ def run_node(node_id: str, token: Token | None = None) -> None:
                     raise ValueError(f"Input '{names[parent]}' has no results yet - run it first")
                 views[names[parent]] = store.result_path(parent, run["cache_file"])
                 inputs[parent] = run["finished_at"]
+            sql = params_engine.bind_duckdb(sql, all_params)
             transform_duck.run_to_parquet(sql, views, out, token)
         token.check()
         exec_ms = round((time.perf_counter() - started) * 1000)
@@ -93,6 +116,9 @@ def run_node(node_id: str, token: Token | None = None) -> None:
         row_count=row_count,
         columns=columns,
         exec_ms=exec_ms,
+        params=used,
+        sql=node["sql"],
+        config=node["config"],
         **stats,
     )
     try:

@@ -76,21 +76,35 @@ def topo_order(node_ids: list[str], edges: list[Edge]) -> list[str]:
     return order
 
 
-def compute_stale(nodes: list[dict], edges: list[Edge], runs: dict[str, dict]) -> dict[str, bool]:
-    """A node is stale if it never ran, its SQL changed, its inputs changed or re-ran, or an input is stale."""
+def compute_stale(
+    nodes: list[dict],
+    edges: list[Edge],
+    runs: dict[str, dict],
+    used_params: dict[str, dict[str, str | None]] | None = None,
+) -> dict[str, bool]:
+    """A node is stale if it never ran, its SQL changed, its inputs or parameters changed, or an input is stale.
+
+    `used_params` maps a node id to {parameter name: current fingerprint} for the parameters its SQL uses.
+    Charts never run: they are stale exactly when their input is.
+    """
     by_id = {n["id"]: n for n in nodes}
     parents = parents_map(edges)
+    used_params = used_params or {}
     stale: dict[str, bool] = {}
     for nid in topo_order(list(by_id), edges):
+        ps = parents.get(nid, [])
+        if by_id[nid].get("kind") == "chart":
+            stale[nid] = not ps or ps[0] not in runs or stale.get(ps[0], True)
+            continue
         run = runs.get(nid)
         if run is None:
             stale[nid] = True
             continue
-        ps = parents.get(nid, [])
         current_inputs = {p: runs[p]["finished_at"] if p in runs else None for p in ps}
         stale[nid] = (
             run["sql_hash"] != node_hash(by_id[nid])
             or run["inputs"] != current_inputs
+            or run.get("params", {}) != used_params.get(nid, {})
             or any(stale.get(p, True) for p in ps)
         )
     return stale

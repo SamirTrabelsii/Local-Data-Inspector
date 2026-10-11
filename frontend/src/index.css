@@ -136,3 +136,17 @@ body {
   background: linear-gradient(90deg, transparent, rgb(96 165 250 / 0.55), transparent) 0 0 / 200% 100%;
   animation: ldi-sheen 1.6s linear infinite;
 }
+
+/* uPlot, dark */
+.ldi-uplot .uplot,
+.ldi-uplot .u-legend {
+  font-family: var(--font-sans);
+  color: var(--color-muted);
+}
+.ldi-uplot .u-legend {
+  font-size: 11px;
+  padding-top: 4px;
+}
+.ldi-uplot .u-select {
+  background: rgb(139 124 255 / 0.12);
+}

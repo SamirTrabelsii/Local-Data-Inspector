@@ -11,6 +11,8 @@ interface UiState {
   select: (id: string | null) => void
   settingsOpen: boolean
   setSettingsOpen: (open: boolean) => void
+  paramsOpen: boolean
+  setParamsOpen: (open: boolean) => void
   cacheOpen: boolean
   setCacheOpen: (open: boolean) => void
   explorerOpen: boolean
@@ -34,6 +36,8 @@ export const useUi = create<UiState>((set, get) => ({
   select: (selectedId) => set({ selectedId }),
   settingsOpen: false,
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+  paramsOpen: false,
+  setParamsOpen: (paramsOpen) => set({ paramsOpen }),
   cacheOpen: false,
   setCacheOpen: (cacheOpen) => set({ cacheOpen }),
   explorerOpen: readExplorerOpen(),

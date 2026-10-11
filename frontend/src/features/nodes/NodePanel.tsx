@@ -1,16 +1,20 @@
 import clsx from 'clsx'
 import {
   ArrowRight,
+  Braces,
   CircleAlert,
   Cloud,
   FlaskConical,
   FileSpreadsheet,
   GitFork,
+  History,
   LoaderCircle,
   MousePointerClick,
+  ChartNoAxesColumn,
   Pin,
   PinOff,
   Play,
+  Rows3,
   Sparkles,
   Square,
   Trash2,
@@ -25,10 +29,15 @@ import { cancelNode, runDownstream, runFull, runNode } from '../../lib/run'
 import { confirmDialog, editDraft, flushAllDrafts, useDrafts, useUi } from '../../lib/store'
 import { EstimateWarnings, SourceEstimate } from '../editor/SourceEstimate'
 import { SqlEditor } from '../editor/SqlEditor'
+import { ChartPanel } from '../charts/ChartPanel'
+import { HistoryView } from '../insight/HistoryView'
+import { ProfileView } from '../insight/ProfileView'
 import { ResultsTable } from '../results/ResultsTable'
 import { StatsBar } from '../results/StatsBar'
 import { SampleControl } from './SampleControl'
 import { FileSourceEditor, TableSourceEditor } from './SourceEditors'
+
+type ResultsTab = 'data' | 'profile' | 'history'
 
 const isMac = navigator.platform.toUpperCase().includes('MAC')
 
@@ -131,8 +140,10 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
         <div className="min-w-32 flex-1">
           <NameInput node={node} hasDownstream={downstream.length > 0} />
           <div className="mt-0.5 truncate text-[11px] text-faint">
-            {node.kind === 'transform'
-              ? 'DuckDB transform · runs locally, free'
+            {node.kind === 'chart'
+              ? `Chart · draws ${inputNodes[0]?.name ?? 'its input'} locally, free`
+              : node.kind === 'transform'
+                ? 'DuckDB transform · runs locally, free'
               : node.source_type === 'bq_query'
                 ? 'BigQuery source · billed per run'
                 : node.source_type === 'bq_table'
@@ -142,7 +153,7 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
         </div>
         <StatusPill status={node.status} />
         <div className="flex items-center gap-1.5">
-          {downstream.length > 0 && (
+          {node.kind !== 'chart' && downstream.length > 0 && (
             <Button
               onClick={() => runDownstream(node)}
               disabled={running}
@@ -166,7 +177,7 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
               Run full
             </Button>
           )}
-          {running ? (
+          {node.kind === 'chart' ? null : running ? (
             <Button onClick={() => cancelNode(node)} title="Stop this run (BigQuery job cancel / DuckDB interrupt)">
               <Square className="size-3 fill-current text-err" />
               Cancel
@@ -199,6 +210,16 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
         </div>
       </div>
 
+      {node.kind === 'chart' ? (
+        <div className="min-h-0 flex-1">
+          <ChartPanel
+            key={node.id}
+            node={node}
+            inputColumns={inputNodes[0]?.result?.columns ?? null}
+            inputVersion={inputNodes[0]?.result?.finished_at ?? null}
+          />
+        </div>
+      ) : (
       <Group orientation="vertical" className="min-h-0 flex-1">
         <Panel id="editor" defaultSize="40" minSize={110}>
           <div className="flex h-full flex-col">
@@ -261,6 +282,7 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
               {(node.source_type === 'bq_query' || node.source_type === 'bq_table') && (
                 <SampleControl node={node} disabled={running} />
               )}
+              <ParamChips node={node} />
               {draft !== undefined && <span className="text-faint">saving...</span>}
             </div>
           </div>
@@ -270,12 +292,67 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
           <ResultsSection node={node} />
         </Panel>
       </Group>
+      )}
+    </div>
+  )
+}
+
+function ParamChips({ node }: { node: WNode }) {
+  const setParamsOpen = useUi((s) => s.setParamsOpen)
+  if (node.params_used.length === 0) return null
+  return (
+    <button
+      type="button"
+      onClick={() => setParamsOpen(true)}
+      className={clsx(
+        'flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 font-mono text-[11px] ring-1 ring-inset transition-colors',
+        node.params_missing.length
+          ? 'bg-warn/10 text-warn ring-warn/30'
+          : 'bg-panel3 text-muted ring-line2 hover:text-fg',
+      )}
+      title={
+        node.params_missing.length
+          ? `Not defined yet: ${node.params_missing.join(', ')}. Click to define.`
+          : 'Parameters used by this SQL. Click to edit their values.'
+      }
+    >
+      <Braces className="size-3" />
+      {node.params_used.join(' ')}
+    </button>
+  )
+}
+
+function ResultTabs({ tab, onChange }: { tab: ResultsTab; onChange: (t: ResultsTab) => void }) {
+  const tabs: { id: ResultsTab; label: string; icon: typeof Rows3 }[] = [
+    { id: 'data', label: 'Data', icon: Rows3 },
+    { id: 'profile', label: 'Profile', icon: ChartNoAxesColumn },
+    { id: 'history', label: 'History', icon: History },
+  ]
+  return (
+    <div className="flex shrink-0 gap-1 border-b border-line bg-panel px-3 pt-1.5" role="tablist">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          role="tab"
+          aria-selected={tab === t.id}
+          onClick={() => onChange(t.id)}
+          className={clsx(
+            '-mb-px flex h-7 items-center gap-1.5 rounded-t-md border-b-2 px-2.5 text-xs font-medium transition-colors',
+            tab === t.id ? 'border-accent text-fg' : 'border-transparent text-muted hover:text-fg',
+          )}
+        >
+          <t.icon className="size-3.5" />
+          {t.label}
+        </button>
+      ))}
     </div>
   )
 }
 
 function ResultsSection({ node }: { node: WNode }) {
   const r = node.result
+  const [tab, setTab] = useState<ResultsTab>('data')
   return (
     <div className="flex h-full flex-col">
       {node.status === 'error' && node.error && (
@@ -300,8 +377,13 @@ function ResultsSection({ node }: { node: WNode }) {
       {r ? (
         <>
           <StatsBar node={node} />
+          <ResultTabs tab={tab} onChange={setTab} />
           <div className="min-h-0 flex-1">
-            <ResultsTable nodeId={node.id} version={r.finished_at} total={r.row_count} columns={r.columns} />
+            {tab === 'data' && (
+              <ResultsTable nodeId={node.id} version={r.finished_at} total={r.row_count} columns={r.columns} />
+            )}
+            {tab === 'profile' && <ProfileView nodeId={node.id} version={r.finished_at} />}
+            {tab === 'history' && <HistoryView node={node} />}
           </div>
         </>
       ) : (

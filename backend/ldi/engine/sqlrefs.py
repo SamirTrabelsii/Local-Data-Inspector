@@ -9,6 +9,7 @@ import re
 TOKEN = re.compile(
     r"""
     (?P<comment>--[^\n]*|/\*.*?(?:\*/|$))
+  | (?P<param>\{\{[^}]*\}\})
   | (?P<string>'(?:[^']|'')*'?)
   | (?P<dollar>\$(?P<tag>[A-Za-z_]*)\$.*?(?:\$(?P=tag)\$|$))
   | (?P<quoted>"(?:[^"]|"")*"?)

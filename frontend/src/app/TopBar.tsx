@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
-import { HardDrive, PanelLeft, PiggyBank, Settings, Workflow } from 'lucide-react'
+import { Braces, HardDrive, PanelLeft, PiggyBank, Settings, Workflow } from 'lucide-react'
 import { Button } from '../components/ui'
 import { api } from '../lib/api'
 import { fmtBytes, fmtUsd } from '../lib/format'
-import { useSavings } from '../lib/queryClient'
+import { useSavings, useWorkspace } from '../lib/queryClient'
 import { useUi } from '../lib/store'
 
 /** Lifetime BigQuery spend vs. the scans that free local runs avoided. */
@@ -30,6 +30,31 @@ function SavingsMeter() {
         Saved <b className="font-medium tabular-nums text-ok">{fmtUsd(t.avoided_usd)}</b>
       </span>
     </div>
+  )
+}
+
+/** Opens the parameters dialog; flags {{names}} that SQL uses but nothing defines. */
+function ParamsButton() {
+  const setParamsOpen = useUi((s) => s.setParamsOpen)
+  const params = useQuery({ queryKey: ['params'], queryFn: api.params })
+  const { data: ws } = useWorkspace()
+  const missing = new Set(ws?.nodes.flatMap((n) => n.params_missing)).size
+  const defined = params.data?.filter((p) => p.type !== null).length ?? 0
+  return (
+    <button
+      type="button"
+      onClick={() => setParamsOpen(true)}
+      title={
+        missing
+          ? `${missing} parameter${missing === 1 ? ' is' : 's are'} used in SQL but not defined`
+          : 'Workspace parameters: use {{name}} in Source and Transform SQL'
+      }
+      className="flex h-7 items-center gap-1.5 rounded-full border border-line2 bg-panel2 px-3 text-xs text-muted transition-colors hover:border-[#3a4052] hover:text-fg"
+    >
+      <Braces className="size-3.5" />
+      <span className="tabular-nums">{defined}</span>
+      {missing > 0 && <span className="size-1.5 rounded-full bg-warn" />}
+    </button>
   )
 }
 
@@ -62,6 +87,7 @@ export function TopBar() {
       </div>
       <div className="flex items-center gap-1.5">
         <SavingsMeter />
+        <ParamsButton />
         <button
           type="button"
           onClick={() => setCacheOpen(true)}

@@ -11,7 +11,7 @@ from . import config
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS nodes (
     id         TEXT PRIMARY KEY,
-    kind       TEXT NOT NULL CHECK (kind IN ('source', 'transform')),
+    kind       TEXT NOT NULL CHECK (kind IN ('source', 'transform', 'chart')),
     name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
     sql        TEXT NOT NULL DEFAULT '',
     source_type TEXT,                      -- sources only: bq_query | bq_table | file
@@ -38,6 +38,35 @@ CREATE TABLE IF NOT EXISTS runs (
     bytes_processed INTEGER,
     bytes_billed    INTEGER,
     finished_at     TEXT NOT NULL
+);
+-- Every successful run, newest last; trimmed to HISTORY_KEEP per node.
+CREATE TABLE IF NOT EXISTS run_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id         TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    sql             TEXT NOT NULL,
+    config          TEXT NOT NULL DEFAULT '{}',
+    params          TEXT NOT NULL DEFAULT '{}',  -- json {name: "type:value"} used by this run
+    sql_hash        TEXT NOT NULL,
+    row_count       INTEGER NOT NULL,
+    columns         TEXT NOT NULL,
+    exec_ms         INTEGER NOT NULL,
+    bytes_processed INTEGER,
+    bytes_billed    INTEGER,
+    finished_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS run_history_node ON run_history (node_id, id);
+-- Column profile of a node's current cache file.
+CREATE TABLE IF NOT EXISTS profiles (
+    node_id    TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+    cache_file TEXT NOT NULL,
+    data       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS params (
+    name       TEXT PRIMARY KEY COLLATE NOCASE,
+    type       TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 -- Last failed attempt; cleared on the next success.
 CREATE TABLE IF NOT EXISTS errors (
@@ -80,7 +109,36 @@ MIGRATIONS = [
     ("nodes", "source_type", "ALTER TABLE nodes ADD COLUMN source_type TEXT"),
     ("nodes", "config", "ALTER TABLE nodes ADD COLUMN config TEXT NOT NULL DEFAULT '{}'"),
     ("nodes", "pinned", "ALTER TABLE nodes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "params", "ALTER TABLE runs ADD COLUMN params TEXT NOT NULL DEFAULT '{}'"),
 ]
+
+HISTORY_KEEP = 50
+
+
+def _allow_chart_nodes(con: sqlite3.Connection) -> None:
+    """Workspaces created before chart nodes have a CHECK on `kind` that rejects them: rebuild the table.
+
+    SQLite can't alter a CHECK, so this is the documented copy-and-rename, with foreign keys off so the
+    edges / runs rows that reference nodes survive.
+    """
+    (ddl,) = con.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'nodes'").fetchone()
+    if "'chart'" in ddl:
+        return
+    con.execute("PRAGMA foreign_keys = OFF")
+    try:
+        con.execute("BEGIN")
+        columns = ", ".join(r["name"] for r in con.execute("PRAGMA table_info(nodes)"))
+        new_ddl = ddl.replace("'transform')", "'transform', 'chart')", 1).replace("nodes", "nodes_new", 1)
+        con.execute(new_ddl)
+        con.execute(f"INSERT INTO nodes_new ({columns}) SELECT {columns} FROM nodes")
+        con.execute("DROP TABLE nodes")
+        con.execute("ALTER TABLE nodes_new RENAME TO nodes")
+        con.execute("COMMIT")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    finally:
+        con.execute("PRAGMA foreign_keys = ON")
 
 
 @contextmanager
@@ -102,6 +160,7 @@ def init() -> None:
         for table, column, ddl in MIGRATIONS:
             if column not in {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}:
                 con.execute(ddl)
+        _allow_chart_nodes(con)
         con.execute("UPDATE nodes SET source_type = 'bq_query' WHERE kind = 'source' AND source_type IS NULL")
 
 

@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { Cloud, FileSpreadsheet, type LucideIcon, Sparkles, Table2, X } from 'lucide-react'
+import { ChartColumn, Cloud, FileSpreadsheet, type LucideIcon, Sparkles, Table2, X } from 'lucide-react'
 import {
   type ButtonHTMLAttributes,
   type ReactNode,
@@ -78,13 +78,17 @@ export function KindIcon({
   sourceType?: SourceType | null
   size?: 'sm' | 'md'
 }) {
-  const Icon = kind === 'source' ? sourceIcons[sourceType ?? 'bq_query'] : Sparkles
+  const Icon = kind === 'source' ? sourceIcons[sourceType ?? 'bq_query'] : kind === 'chart' ? ChartColumn : Sparkles
   return (
     <div
       className={clsx(
         'grid shrink-0 place-items-center rounded-lg ring-1 ring-inset',
         size === 'md' ? 'size-8' : 'size-6',
-        kind === 'source' ? 'bg-src/10 text-src ring-src/25' : 'bg-trf/10 text-trf ring-trf/25',
+        kind === 'source'
+          ? 'bg-src/10 text-src ring-src/25'
+          : kind === 'chart'
+            ? 'bg-ok/10 text-ok ring-ok/25'
+            : 'bg-trf/10 text-trf ring-trf/25',
       )}
     >
       <Icon className={size === 'md' ? 'size-4' : 'size-3.5'} strokeWidth={2} />

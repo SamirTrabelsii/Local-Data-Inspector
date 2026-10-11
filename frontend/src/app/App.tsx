@@ -4,6 +4,7 @@ import { Toaster } from 'sonner'
 import { ConfirmHost } from '../components/ConfirmHost'
 import { CacheDialog } from '../features/cache/CacheDialog'
 import { Canvas } from '../features/canvas/Canvas'
+import { ParamsDialog } from '../features/params/ParamsDialog'
 import { Explorer } from '../features/explorer/Explorer'
 import { TablePreview } from '../features/explorer/TablePreview'
 import { NodePanel } from '../features/nodes/NodePanel'
@@ -37,6 +38,7 @@ export function App() {
         <ConfirmHost />
         <SettingsDialog />
         <CacheDialog />
+        <ParamsDialog />
         <TablePreview />
         <Toaster
           theme="dark"

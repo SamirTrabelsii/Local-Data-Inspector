@@ -7,6 +7,7 @@ import uuid
 
 from . import db
 from .engine import dag
+from .engine import params as params_engine
 from .engine.sqlrefs import rename_references
 
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
@@ -81,6 +82,25 @@ def clean_config(source_type: str | None, cfg: dict, current: dict | None = None
     return {}
 
 
+CHART_TYPES = ("bar", "line", "scatter", "pivot")
+AGGS = ("sum", "avg", "count", "min", "max", "count_distinct")
+
+
+def clean_chart_config(cfg: dict) -> dict:
+    """Chart settings: the columns are checked against the input when the data is requested."""
+    chart_type = cfg.get("type") or "bar"
+    if chart_type not in CHART_TYPES:
+        raise Invalid(f"Unknown chart type '{chart_type}'")
+    agg = cfg.get("agg") or "sum"
+    if agg not in AGGS:
+        raise Invalid(f"Unknown aggregation '{agg}'")
+    out: dict = {"type": chart_type, "agg": agg, "y": [str(c) for c in (cfg.get("y") or []) if c][:6]}
+    for key in ("x", "series", "rows", "cols", "value"):
+        if cfg.get(key):
+            out[key] = str(cfg[key])
+    return out
+
+
 def _sample(cfg: dict) -> dict:
     """Sample-first mode: read only this percentage of the table(s). Absent = full run."""
     raw = cfg.get("sample_percent")
@@ -127,6 +147,10 @@ def create_node(
         source_type = source_type or "bq_query"
         if source_type not in SOURCE_TYPES:
             raise Invalid(f"Unknown source type '{source_type}'")
+    elif kind == "chart":
+        if len(inputs) > 1:
+            raise Invalid("A chart takes exactly one input")
+        source_type, config = None, clean_chart_config(config or {})
     else:
         source_type, config = None, {}
     node_id = uuid.uuid4().hex[:12]
@@ -162,6 +186,9 @@ def update_node(node_id: str, fields: dict) -> dict:
     if fields.get("config") is not None and node["kind"] == "source":
         sets.append("config = ?")
         params.append(json.dumps(clean_config(node["source_type"], fields["config"], node["config"])))
+    if fields.get("config") is not None and node["kind"] == "chart":
+        sets.append("config = ?")
+        params.append(json.dumps(clean_chart_config(fields["config"])))
     for key, col in (("x", "pos_x"), ("y", "pos_y")):
         if fields.get(key) is not None:
             sets.append(f"{col} = ?")
@@ -230,6 +257,7 @@ def clear_run(node_id: str) -> None:
     """Forget a node's cached result (the caller deletes the files). The node goes back to 'never run'."""
     with db.connect() as con:
         con.execute("DELETE FROM runs WHERE node_id = ?", (node_id,))
+        con.execute("DELETE FROM profiles WHERE node_id = ?", (node_id,))
 
 
 def delete_node(node_id: str) -> None:
@@ -247,11 +275,15 @@ def _add_edge(con: sqlite3.Connection, source: str, target: str) -> None:
     kinds = dict(con.execute("SELECT id, kind FROM nodes WHERE id IN (?, ?)", (source, target)).fetchall())
     if source not in kinds or target not in kinds:
         raise NotFound("Both ends of a connection must exist")
-    if kinds[target] != "transform":
-        raise Invalid("Only transform nodes can take inputs")
+    if kinds[target] == "source":
+        raise Invalid("Only transform and chart nodes can take inputs")
+    if kinds[source] == "chart":
+        raise Invalid("A chart is an end point: nothing can read from it")
     edges = [(r[0], r[1]) for r in con.execute("SELECT source, target FROM edges")]
     if (source, target) in edges:
         return
+    if kinds[target] == "chart" and any(t == target for _, t in edges):
+        raise Invalid("A chart takes exactly one input")
     if dag.would_cycle(edges, source, target):
         raise Invalid("That connection would create a cycle")
     con.execute("INSERT INTO edges (source, target) VALUES (?, ?)", (source, target))
@@ -278,6 +310,7 @@ def _run(row: sqlite3.Row) -> dict:
         "bytes_processed": row["bytes_processed"],
         "bytes_billed": row["bytes_billed"],
         "finished_at": row["finished_at"],
+        "params": json.loads(row["params"]),
     }
 
 
@@ -303,11 +336,15 @@ def save_run(
     exec_ms: int,
     bytes_processed: int | None = None,
     bytes_billed: int | None = None,
+    params: dict[str, str | None] | None = None,
+    sql: str = "",
+    config: dict | None = None,
 ) -> None:
+    finished = db.now()
     with db.connect() as con:
         con.execute(
             "INSERT OR REPLACE INTO runs (node_id, sql_hash, inputs, cache_file, row_count, columns, "
-            "exec_ms, bytes_processed, bytes_billed, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "exec_ms, bytes_processed, bytes_billed, finished_at, params) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 node_id,
                 sql_hash,
@@ -318,10 +355,34 @@ def save_run(
                 exec_ms,
                 bytes_processed,
                 bytes_billed,
-                db.now(),
+                finished,
+                json.dumps(params or {}),
             ),
         )
+        con.execute(
+            "INSERT INTO run_history (node_id, sql, config, params, sql_hash, row_count, columns, exec_ms, "
+            "bytes_processed, bytes_billed, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                node_id,
+                sql,
+                json.dumps(config or {}),
+                json.dumps(params or {}),
+                sql_hash,
+                row_count,
+                json.dumps(columns),
+                exec_ms,
+                bytes_processed,
+                bytes_billed,
+                finished,
+            ),
+        )
+        con.execute(
+            "DELETE FROM run_history WHERE node_id = ? AND id NOT IN "
+            "(SELECT id FROM run_history WHERE node_id = ? ORDER BY id DESC LIMIT ?)",
+            (node_id, node_id, db.HISTORY_KEEP),
+        )
         con.execute("DELETE FROM errors WHERE node_id = ?", (node_id,))
+        con.execute("DELETE FROM profiles WHERE node_id = ?", (node_id,))
 
 
 def save_error(node_id: str, message: str) -> None:
@@ -377,3 +438,87 @@ def savings() -> dict:
             "FROM savings_ledger l JOIN nodes n ON n.id = l.node_id GROUP BY l.node_id ORDER BY n.name"
         ).fetchall()
     return {"total": dict(total), "nodes": [dict(r) for r in rows]}
+
+
+# ---- run history ----------------------------------------------------------------
+
+
+def _history(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "sql": row["sql"],
+        "config": json.loads(row["config"]),
+        "params": json.loads(row["params"]),
+        "sql_hash": row["sql_hash"],
+        "row_count": row["row_count"],
+        "columns": json.loads(row["columns"]),
+        "exec_ms": row["exec_ms"],
+        "bytes_processed": row["bytes_processed"],
+        "bytes_billed": row["bytes_billed"],
+        "finished_at": row["finished_at"],
+    }
+
+
+def list_history(node_id: str) -> list[dict]:
+    """Newest first."""
+    get_node(node_id)
+    with db.connect() as con:
+        rows = con.execute("SELECT * FROM run_history WHERE node_id = ? ORDER BY id DESC", (node_id,)).fetchall()
+    return [_history(r) for r in rows]
+
+
+def get_history_entry(node_id: str, entry_id: int) -> dict:
+    with db.connect() as con:
+        row = con.execute("SELECT * FROM run_history WHERE node_id = ? AND id = ?", (node_id, entry_id)).fetchone()
+    if row is None:
+        raise NotFound(f"Run {entry_id} not found")
+    return _history(row)
+
+
+# ---- profiles -------------------------------------------------------------------
+
+
+def get_profile(node_id: str, cache_file: str) -> dict | None:
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT data FROM profiles WHERE node_id = ? AND cache_file = ?", (node_id, cache_file)
+        ).fetchone()
+    return json.loads(row["data"]) if row else None
+
+
+def save_profile(node_id: str, cache_file: str, data: dict) -> None:
+    with db.connect() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO profiles (node_id, cache_file, data, created_at) "
+            "SELECT id, ?, ?, ? FROM nodes WHERE id = ?",
+            (cache_file, json.dumps(data), db.now(), node_id),
+        )
+
+
+# ---- workspace parameters -------------------------------------------------------
+
+
+def list_params() -> dict[str, params_engine.Param]:
+    with db.connect() as con:
+        rows = con.execute("SELECT * FROM params ORDER BY name").fetchall()
+    return {r["name"]: params_engine.Param(r["name"], r["type"], r["value"]) for r in rows}
+
+
+def set_param(name: str, type_: str, value: str) -> params_engine.Param:
+    try:
+        param = params_engine.validate(name, type_, value)
+    except params_engine.ParamError as exc:
+        raise Invalid(str(exc)) from None
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO params (name, type, value, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (name) DO UPDATE SET type = excluded.type, value = excluded.value, "
+            "updated_at = excluded.updated_at",
+            (param.name, param.type, param.value, db.now()),
+        )
+    return param
+
+
+def delete_param(name: str) -> None:
+    with db.connect() as con:
+        con.execute("DELETE FROM params WHERE name = ?", (name,))
