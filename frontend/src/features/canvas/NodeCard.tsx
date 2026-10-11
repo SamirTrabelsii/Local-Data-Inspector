@@ -35,14 +35,18 @@ export function NodeCard({ data, selected }: NodeProps<LdiNode>) {
       )}
     >
       {n.status === 'running' && <div className="running-sheen absolute inset-x-4 -top-px h-px" />}
-      {n.kind === 'transform' && <Handle type="target" position={Position.Left} />}
+      {n.kind !== 'source' && <Handle type="target" position={Position.Left} />}
 
       <div className="flex items-center gap-2.5 px-3 pt-3 pb-2.5">
         <KindIcon kind={n.kind} sourceType={n.source_type} />
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-[13px] font-medium text-fg">{n.name}</div>
           <div className="truncate text-[11px] text-faint">
-            {n.kind === 'source' ? sourceLabel(n.source_type, n.config.format) : 'DuckDB transform'}
+            {n.kind === 'source'
+              ? sourceLabel(n.source_type, n.config.format)
+              : n.kind === 'chart'
+                ? `Chart · ${n.config.type ?? 'bar'}`
+                : 'DuckDB transform'}
           </div>
         </div>
         {n.pinned && <Pin className="size-3 shrink-0 fill-current text-accent" aria-label="Pinned" />}
@@ -63,7 +67,17 @@ export function NodeCard({ data, selected }: NodeProps<LdiNode>) {
       </div>
 
       <div className="border-t border-line px-3 py-2.5">
-        {r ? (
+        {n.kind === 'chart' ? (
+          <div className="truncate text-xs text-faint">
+            {n.inputs[0] ? (
+              <>
+                Reads <span className="font-mono text-muted">{n.inputs[0]}</span>
+              </>
+            ) : (
+              'Connect an input'
+            )}
+          </div>
+        ) : r ? (
           <>
             <div className="grid grid-cols-3 gap-2">
               <Stat icon={Rows3} label="rows" value={fmtCompact(r.row_count)} />
@@ -106,6 +120,11 @@ export function NodeCard({ data, selected }: NodeProps<LdiNode>) {
         ) : (
           <div className="text-xs text-faint">{n.status === 'running' ? 'Running...' : 'Not run yet'}</div>
         )}
+        {n.params_missing.length > 0 && (
+          <div className="mt-2 truncate rounded-md bg-warn/10 px-2 py-1 font-mono text-[11px] text-warn">
+            undefined: {n.params_missing.map((p) => `{{${p}}}`).join(' ')}
+          </div>
+        )}
         {n.status === 'error' && n.error && (
           <div className="mt-2 line-clamp-2 rounded-md bg-err/10 px-2 py-1 font-mono text-[11px] leading-snug text-err">
             {n.error}
@@ -113,7 +132,7 @@ export function NodeCard({ data, selected }: NodeProps<LdiNode>) {
         )}
       </div>
 
-      <Handle type="source" position={Position.Right} />
+      {n.kind !== 'chart' && <Handle type="source" position={Position.Right} />}
     </div>
   )
 }

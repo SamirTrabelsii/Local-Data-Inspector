@@ -15,7 +15,7 @@ import {
   useNodesInitialized,
   useReactFlow,
 } from '@xyflow/react'
-import { Cloud, FileSpreadsheet, Plus, Sparkles } from 'lucide-react'
+import { ChartColumn, Cloud, FileSpreadsheet, Plus, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '../../components/ui'
@@ -23,6 +23,7 @@ import { api, type NodeKind, type Workspace } from '../../lib/api'
 import { patchCachedNode, refreshWorkspace, useWorkspace } from '../../lib/queryClient'
 import { confirmDialog, useUi } from '../../lib/store'
 import { TABLE_DRAG_TYPE } from '../../lib/catalog'
+import { defaultChartConfig } from '../charts/ChartPanel'
 import { type LdiNode, NodeCard } from './NodeCard'
 import { NODE_W, useAddSources, usePlaceNode } from './placement'
 
@@ -112,7 +113,10 @@ export function Canvas() {
   const isValidConnection = useCallback(
     (c: Connection | Edge) => {
       if (c.source === c.target) return false
-      return data?.nodes.find((n) => n.id === c.target)?.kind === 'transform'
+      const nodes = data?.nodes ?? []
+      const target = nodes.find((n) => n.id === c.target)
+      if (nodes.find((n) => n.id === c.source)?.kind === 'chart') return false
+      return target?.kind === 'transform' || (target?.kind === 'chart' && target.input_ids.length === 0)
     },
     [data],
   )
@@ -155,7 +159,8 @@ export function Canvas() {
   const addNode = useCallback(
     async (kind: NodeKind) => {
       const ws = data as Workspace
-      const parent = kind === 'transform' ? ws.nodes.find((n) => n.id === selectedId) : undefined
+      const picked = ws.nodes.find((n) => n.id === selectedId)
+      const parent = kind !== 'source' && picked?.kind !== 'chart' ? picked : undefined
       const p = parent && (rf.getNode(parent.id)?.position ?? { x: parent.x, y: parent.y })
       const pos = place(p ? { x: p.x + NODE_W + 90, y: p.y } : undefined)
       const sql =
@@ -165,7 +170,12 @@ export function Canvas() {
             ? `SELECT\n  *\nFROM ${parent.name}\nLIMIT 100\n`
             : '-- Connect an input node, then query it by name\nSELECT 42 AS answer\n'
       try {
-        const node = await api.createNode({ kind, sql, ...pos, inputs: parent ? [parent.id] : [] })
+        const node = await api.createNode({
+          kind,
+          ...(kind === 'chart' ? { config: defaultChartConfig(parent?.result?.columns ?? []) } : { sql }),
+          ...pos,
+          inputs: parent ? [parent.id] : [],
+        })
         await refreshWorkspace()
         select(node.id)
       } catch (e) {
@@ -235,7 +245,7 @@ export function Canvas() {
           position="bottom-right"
           pannable
           zoomable
-          nodeColor={(n) => ((n as LdiNode).data.node.kind === 'source' ? '#38bdf8' : '#a78bfa')}
+          nodeColor={(n) => ((n as LdiNode).data.node.kind === 'source' ? '#38bdf8' : (n as LdiNode).data.node.kind === 'chart' ? '#34d399' : '#a78bfa')}
           nodeBorderRadius={6}
           style={{ width: 168, height: 110 }}
           maskColor="rgba(9,10,14,0.65)"
@@ -268,6 +278,21 @@ export function Canvas() {
                 e.target.value = ''
               }}
             />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => addNode('chart')}
+              disabled={!selectedNode || selectedNode.kind === 'chart'}
+              title={
+                selectedNode && selectedNode.kind !== 'chart'
+                  ? `Add a chart of ${selectedNode.name}`
+                  : 'Select a source or transform to chart its result'
+              }
+            >
+              <Plus className="size-3.5" />
+              <ChartColumn className="size-3.5 text-ok" />
+              Chart
+            </Button>
             <Button
               variant="ghost"
               size="sm"

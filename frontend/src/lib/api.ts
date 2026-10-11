@@ -1,4 +1,4 @@
-export type NodeKind = 'source' | 'transform'
+export type NodeKind = 'source' | 'transform' | 'chart'
 export type SourceType = 'bq_query' | 'bq_table' | 'file'
 export type NodeStatus = 'running' | 'error' | 'never_run' | 'stale' | 'fresh'
 
@@ -36,11 +36,25 @@ export interface FileSourceConfig {
   sheet?: string
 }
 
+export type ChartType = 'bar' | 'line' | 'scatter' | 'pivot'
+export type Agg = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct'
+
+export interface ChartConfig {
+  type: ChartType
+  agg: Agg
+  x?: string
+  y: string[]
+  series?: string
+  rows?: string
+  cols?: string
+  value?: string
+}
+
 export interface WNode {
   id: string
   kind: NodeKind
   source_type: SourceType | null
-  config: Partial<TableSourceConfig & FileSourceConfig & SampleConfig>
+  config: Partial<TableSourceConfig & FileSourceConfig & SampleConfig & ChartConfig>
   name: string
   sql: string
   x: number
@@ -49,6 +63,10 @@ export interface WNode {
   stale: boolean
   error: string | null
   inputs: string[]
+  input_ids: string[]
+  /** Names of the {{parameters}} this node's SQL uses, and those that no parameter defines yet. */
+  params_used: string[]
+  params_missing: string[]
   result: RunResult | null
   pinned: boolean
   /** Built from a sample: this source is sampled, or a transform reads one upstream. */
@@ -169,6 +187,103 @@ export interface CleanResult {
   nodes: Pick<CacheEntry, 'node_id' | 'name' | 'bytes' | 'rebuild_usd' | 'rebuild_from_bigquery'>[]
 }
 
+export interface ColumnProfile {
+  name: string
+  type: string
+  kind: 'numeric' | 'temporal' | 'text' | 'bool' | 'other'
+  count: number
+  null_pct: number
+  distinct: number
+  min: string | null
+  max: string | null
+  avg: string | null
+  q50: string | null
+  histogram: { lo: number; hi: number; counts: number[] } | null
+  top: { value: string; count: number }[] | null
+}
+
+export interface Profile {
+  rows: number
+  columns: ColumnProfile[]
+  truncated: boolean
+}
+
+interface SeriesData {
+  name: string
+  values: (number | null)[]
+}
+
+export type ChartData =
+  | { type: 'bar'; labels: string[]; series: SeriesData[]; truncated: boolean; categories: number }
+  | {
+      type: 'line'
+      xkind: 'numeric' | 'temporal' | 'category'
+      x: number[]
+      labels: string[] | null
+      series: SeriesData[]
+      truncated: boolean
+    }
+  | {
+      type: 'scatter'
+      xkind: 'numeric' | 'temporal'
+      x: number[]
+      series: SeriesData[]
+      total: number
+      shown: number
+    }
+  | {
+      type: 'pivot'
+      rows_label: string
+      cols_label: string | null
+      measure: string
+      row_labels: string[]
+      col_labels: string[]
+      cells: (number | null)[][]
+      truncated: boolean
+      row_count: number
+      col_count: number
+    }
+
+export interface HistoryEntry {
+  id: number
+  sql: string
+  config: Record<string, unknown>
+  /** {name: "type:value"} of the parameters this run used. */
+  params: Record<string, string | null>
+  sql_hash: string
+  row_count: number
+  columns: Column[]
+  exec_ms: number
+  bytes_processed: number | null
+  bytes_billed: number | null
+  finished_at: string
+}
+
+export interface RunComparison {
+  a: number
+  b: number
+  sql_changed: boolean
+  sql_diff: { op: 'same' | 'add' | 'del'; text: string }[]
+  config_changed: boolean
+  params_changed: Record<string, { before: string | null; after: string | null }>
+  columns: {
+    added: Column[]
+    removed: Column[]
+    retyped: { name: string; before: string; after: string }[]
+  }
+  stats: Record<'row_count' | 'exec_ms' | 'bytes_processed' | 'bytes_billed', { a: number | null; b: number | null; delta: number | null }>
+}
+
+export type ParamType = 'string' | 'number' | 'date' | 'bool'
+
+export interface Param {
+  name: string
+  /** null = used in SQL but not defined yet. */
+  type: ParamType | null
+  value: string | null
+  used_by: string[]
+}
+
 export type ExportFormat = 'csv' | 'parquet' | 'xlsx'
 export type PushMode = 'create' | 'overwrite' | 'append'
 
@@ -269,6 +384,16 @@ export const api = {
   bqTable: (id: string) => req<BqTableInfo>('GET', `/bq/table?${qs({ id })}`),
   bqPreview: (id: string, limit = 100) =>
     req<{ columns: Column[]; rows: unknown[][] }>('GET', `/bq/preview?${qs({ id, limit })}`),
+  profile: (id: string) => req<Profile>('GET', `/nodes/${id}/profile`),
+  chartData: (id: string, config?: ChartConfig, signal?: AbortSignal) =>
+    req<ChartData>('POST', `/nodes/${id}/chart-data`, { config }, signal),
+  history: (id: string) => req<HistoryEntry[]>('GET', `/nodes/${id}/history`),
+  compareRuns: (id: string, a: number, b: number) =>
+    req<RunComparison>('GET', `/nodes/${id}/history/compare?${qs({ a, b })}`),
+  params: () => req<Param[]>('GET', '/params'),
+  putParam: (name: string, type: ParamType, value: string) =>
+    req<Param[]>('PUT', `/params/${encodeURIComponent(name)}`, { type, value }),
+  deleteParam: (name: string) => req<void>('DELETE', `/params/${encodeURIComponent(name)}`),
   getSettings: () => req<Settings>('GET', '/settings'),
   putSettings: (s: Settings) => req<Settings>('PUT', '/settings', s),
 }
