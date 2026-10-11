@@ -1,8 +1,9 @@
 import { Handle, type Node, type NodeProps, Position } from '@xyflow/react'
 import clsx from 'clsx'
-import { Columns3, Rows3, Square, Timer } from 'lucide-react'
+import { Columns3, FlaskConical, Pin, Rows3, Square, Timer } from 'lucide-react'
 import type { WNode } from '../../lib/api'
-import { fmtBytes, fmtCompact, fmtDateTime, fmtMs, timeAgo, useNow } from '../../lib/format'
+import { fmtBytes, fmtCompact, fmtDateTime, fmtMs, fmtUsd, timeAgo, useNow } from '../../lib/format'
+import { useSavings } from '../../lib/queryClient'
 import { cancelNode } from '../../lib/run'
 import { KindIcon, StatusPill, sourceLabel } from '../../components/ui'
 
@@ -24,6 +25,7 @@ export function NodeCard({ data, selected }: NodeProps<LdiNode>) {
   const n = data.node
   const now = useNow()
   const r = n.result
+  const mine = useSavings().data?.nodes.find((x) => x.node_id === n.id)
   return (
     <div
       className={clsx(
@@ -43,6 +45,7 @@ export function NodeCard({ data, selected }: NodeProps<LdiNode>) {
             {n.kind === 'source' ? sourceLabel(n.source_type, n.config.format) : 'DuckDB transform'}
           </div>
         </div>
+        {n.pinned && <Pin className="size-3 shrink-0 fill-current text-accent" aria-label="Pinned" />}
         <StatusPill status={n.status} />
         {n.status === 'running' && (
           <button
@@ -72,13 +75,33 @@ export function NodeCard({ data, selected }: NodeProps<LdiNode>) {
                 {n.kind === 'source' ? 'Refreshed' : 'Ran'} {timeAgo(r.finished_at, now)}
               </span>
               {n.source_type === 'bq_query' ? (
-                r.bytes_billed != null && <span>{fmtBytes(r.bytes_billed)} billed</span>
+                r.bytes_billed != null && (
+                  <span title={mine ? `${fmtUsd(mine.spent_usd)} spent over ${mine.runs} runs` : undefined}>
+                    {fmtBytes(r.bytes_billed)} billed
+                  </span>
+                )
               ) : n.source_type === 'bq_table' ? (
                 <span>no query cost</span>
+              ) : mine && mine.avoided_bytes > 0 ? (
+                <span
+                  className="text-ok/80"
+                  title={`Avoided ${fmtBytes(mine.avoided_bytes)} of BigQuery scans over ${mine.runs} local runs`}
+                >
+                  saved {fmtUsd(mine.avoided_usd)}
+                </span>
               ) : (
                 <span className="text-ok/70">free</span>
               )}
             </div>
+            {n.sampled && (
+              <div
+                className="mt-1.5 flex items-center gap-1 text-[11px] text-warn"
+                title="Built from a sample of the data. Run the source in full to promote it."
+              >
+                <FlaskConical className="size-3" />
+                {n.config.sample_percent ? `${n.config.sample_percent}% sample` : 'from a sample'}
+              </div>
+            )}
           </>
         ) : (
           <div className="text-xs text-faint">{n.status === 'running' ? 'Running...' : 'Not run yet'}</div>

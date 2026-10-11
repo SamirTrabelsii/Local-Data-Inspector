@@ -3,10 +3,13 @@ import {
   ArrowRight,
   CircleAlert,
   Cloud,
+  FlaskConical,
   FileSpreadsheet,
   GitFork,
   LoaderCircle,
   MousePointerClick,
+  Pin,
+  PinOff,
   Play,
   Sparkles,
   Square,
@@ -18,12 +21,13 @@ import { toast } from 'sonner'
 import { Button, KindIcon, Kbd, StatusPill, sourceLabel } from '../../components/ui'
 import { api, type WNode, type Workspace } from '../../lib/api'
 import { refreshWorkspace, useWorkspace } from '../../lib/queryClient'
-import { cancelNode, runDownstream, runNode } from '../../lib/run'
+import { cancelNode, runDownstream, runFull, runNode } from '../../lib/run'
 import { confirmDialog, editDraft, flushAllDrafts, useDrafts, useUi } from '../../lib/store'
-import { SourceEstimate } from '../editor/SourceEstimate'
+import { EstimateWarnings, SourceEstimate } from '../editor/SourceEstimate'
 import { SqlEditor } from '../editor/SqlEditor'
 import { ResultsTable } from '../results/ResultsTable'
 import { StatsBar } from '../results/StatsBar'
+import { SampleControl } from './SampleControl'
 import { FileSourceEditor, TableSourceEditor } from './SourceEditors'
 
 const isMac = navigator.platform.toUpperCase().includes('MAC')
@@ -110,6 +114,15 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
     await refreshWorkspace()
   }
 
+  const togglePin = async () => {
+    try {
+      await api.pin(node.id, !node.pinned)
+    } catch (e) {
+      toast.error('Could not change the pin', { description: (e as Error).message })
+    }
+    await refreshWorkspace()
+  }
+
   return (
     <div className="flex h-full flex-col bg-panel">
       {/* header */}
@@ -144,6 +157,15 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
               )}
             </Button>
           )}
+          {node.config.sample_percent && !running && (
+            <Button
+              onClick={() => runFull(node)}
+              title="Turn sampling off and run this source on all of the data"
+            >
+              <FlaskConical className="size-3.5 text-warn" />
+              Run full
+            </Button>
+          )}
           {running ? (
             <Button onClick={() => cancelNode(node)} title="Stop this run (BigQuery job cancel / DuckDB interrupt)">
               <Square className="size-3 fill-current text-err" />
@@ -154,6 +176,21 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
               <Play className="size-3.5 fill-current" />
               {node.kind === 'source' ? (node.result ? 'Refresh' : 'Run') : 'Run'}
               <Kbd>{isMac ? '⌘' : 'Ctrl'} ↵</Kbd>
+            </Button>
+          )}
+          {node.result && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={togglePin}
+              className={node.pinned ? 'text-accent' : undefined}
+              title={
+                node.pinned
+                  ? 'Pinned: clean-up never deletes this cache. Click to unpin'
+                  : 'Pin this cache so clean-up never deletes it'
+              }
+            >
+              {node.pinned ? <Pin className="size-4 fill-current" /> : <PinOff className="size-4" />}
             </Button>
           )}
           <Button variant="ghost" size="icon" onClick={remove} disabled={running} title="Delete node">
@@ -206,9 +243,13 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
                 />
               )}
             </div>
-            <div className="flex h-8 shrink-0 items-center border-t border-line bg-panel2/50 px-4 text-[11px]">
+            {node.source_type === 'bq_query' && (
+              <EstimateWarnings sql={sql} samplePercent={node.config.sample_percent} nodeId={node.id} />
+            )}
+            <div className="flex h-8 shrink-0 items-center gap-3 border-t border-line bg-panel2/50 px-4 text-[11px]">
+              <div className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap">
               {node.source_type === 'bq_query' ? (
-                <SourceEstimate sql={sql} />
+                <SourceEstimate sql={sql} samplePercent={node.config.sample_percent} nodeId={node.id} />
               ) : node.source_type === 'bq_table' ? (
                 <span className="text-faint">Read with the BigQuery Storage API · no query job, no analysis cost</span>
               ) : node.source_type === 'file' ? (
@@ -216,7 +257,11 @@ function NodeDetail({ node, ws }: { node: WNode; ws: Workspace }) {
               ) : (
                 <span className="text-faint">DuckDB SQL · inputs are views over their cached Parquet</span>
               )}
-              {draft !== undefined && <span className="ml-auto pl-3 text-faint">saving...</span>}
+              </div>
+              {(node.source_type === 'bq_query' || node.source_type === 'bq_table') && (
+                <SampleControl node={node} disabled={running} />
+              )}
+              {draft !== undefined && <span className="text-faint">saving...</span>}
             </div>
           </div>
         </Panel>

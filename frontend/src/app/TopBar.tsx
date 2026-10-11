@@ -1,11 +1,41 @@
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
-import { PanelLeft, Settings, Workflow } from 'lucide-react'
+import { HardDrive, PanelLeft, PiggyBank, Settings, Workflow } from 'lucide-react'
 import { Button } from '../components/ui'
 import { api } from '../lib/api'
+import { fmtBytes, fmtUsd } from '../lib/format'
+import { useSavings } from '../lib/queryClient'
 import { useUi } from '../lib/store'
 
+/** Lifetime BigQuery spend vs. the scans that free local runs avoided. */
+function SavingsMeter() {
+  const { data } = useSavings()
+  const t = data?.total
+  if (!t) return null
+  return (
+    <div
+      className="flex h-7 items-center gap-3 rounded-full border border-line2 bg-panel2 px-3 text-xs"
+      title={[
+        `Spent on BigQuery: ${fmtBytes(t.spent_bytes)} billed over ${t.bq_runs} run${t.bq_runs === 1 ? '' : 's'}`,
+        `Avoided: ${fmtBytes(t.avoided_bytes)} of BigQuery scans over ${t.local_runs} free local run${t.local_runs === 1 ? '' : 's'}`,
+        'Avoided = what re-querying the upstream BigQuery sources would have processed each time.',
+        t.since ? `Counting since ${new Date(t.since).toLocaleDateString()}` : 'Nothing recorded yet',
+      ].join('\n')}
+    >
+      <PiggyBank className="size-3.5 text-ok" />
+      <span className="text-faint">
+        Spent <b className="font-medium tabular-nums text-fg">{fmtUsd(t.spent_usd)}</b>
+      </span>
+      <span className="text-faint">
+        Saved <b className="font-medium tabular-nums text-ok">{fmtUsd(t.avoided_usd)}</b>
+      </span>
+    </div>
+  )
+}
+
 export function TopBar() {
+  const setCacheOpen = useUi((s) => s.setCacheOpen)
+  const cache = useQuery({ queryKey: ['cache'], queryFn: api.cache })
   const openSettings = useUi((s) => s.setSettingsOpen)
   const explorerOpen = useUi((s) => s.explorerOpen)
   const toggleExplorer = useUi((s) => s.toggleExplorer)
@@ -31,6 +61,16 @@ export function TopBar() {
         <span className="hidden text-xs text-faint md:inline">BigQuery once · DuckDB forever</span>
       </div>
       <div className="flex items-center gap-1.5">
+        <SavingsMeter />
+        <button
+          type="button"
+          onClick={() => setCacheOpen(true)}
+          title="Cache manager: disk usage, pin and clean up"
+          className="flex h-7 items-center gap-1.5 rounded-full border border-line2 bg-panel2 px-3 text-xs text-muted transition-colors hover:border-[#3a4052] hover:text-fg"
+        >
+          <HardDrive className="size-3.5" />
+          <span className="tabular-nums">{cache.data ? fmtBytes(cache.data.total_bytes) : '-'}</span>
+        </button>
         <button
           type="button"
           onClick={() => openSettings(true)}
