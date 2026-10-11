@@ -45,6 +45,10 @@ def descendants(edges: list[Edge], node_id: str) -> set[str]:
     return seen
 
 
+def ancestors(edges: list[Edge], node_id: str) -> set[str]:
+    return descendants([(target, source) for source, target in edges], node_id)
+
+
 def would_cycle(edges: list[Edge], source: str, target: str) -> bool:
     """True if adding source -> target closes a cycle (target already reaches source)."""
     return source == target or source in descendants(edges, target)

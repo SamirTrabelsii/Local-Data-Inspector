@@ -49,6 +49,20 @@ def remove_node(node_id: str) -> None:
     shutil.rmtree(config.cache_dir() / node_id, ignore_errors=True)
 
 
+def disk_usage(node_id: str) -> int:
+    """Bytes the node's cache directory takes on disk (0 if it has none)."""
+    d = config.cache_dir() / node_id
+    if not d.is_dir():
+        return 0
+    total = 0
+    for f in d.iterdir():
+        try:
+            total += f.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
 def _columns(con: duckdb.DuckDBPyConnection, src: str) -> list[dict]:
     return [{"name": c[0], "type": c[1]} for c in con.execute(f"DESCRIBE SELECT * FROM {src}").fetchall()]
 

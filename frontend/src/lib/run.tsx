@@ -3,14 +3,21 @@ import { api, type DryRun, type WNode } from './api'
 import { fmtBytes, fmtUsd } from './format'
 import { catalogQueries } from './catalog'
 import { cachedNode, queryClient, refreshWorkspace } from './queryClient'
-import { confirmDialog, flushDraft, useDrafts } from './store'
+import { WarningList } from '../features/editor/Warnings'
+import { confirmDialog, flushDraft, saveConfig, useDrafts } from './store'
 
-export const dryRunKey = (sql: string) => ['dryrun', sql.trim()] as const
+export interface DryRunOpts {
+  samplePercent?: number
+  nodeId?: string
+}
 
-export const fetchDryRun = (sql: string) =>
+export const dryRunKey = (sql: string, opts: DryRunOpts = {}) =>
+  ['dryrun', sql.trim(), opts.samplePercent ?? 0, opts.nodeId ?? ''] as const
+
+export const fetchDryRun = (sql: string, opts: DryRunOpts = {}) =>
   queryClient.fetchQuery({
-    queryKey: dryRunKey(sql),
-    queryFn: ({ signal }) => api.dryRun(sql.trim(), signal),
+    queryKey: dryRunKey(sql, opts),
+    queryFn: ({ signal }) => api.dryRun(sql.trim(), opts, signal),
     staleTime: 60_000,
   })
 
@@ -42,14 +49,16 @@ async function runTableSource(node: WNode) {
       })
       return
     }
-    const bytes = info.num_bytes ?? 0
+    const sample = node.config.sample_percent
+    const bytes = ((info.num_bytes ?? 0) * (sample ?? 100)) / 100
     if (bytes > settings.confirm_above_bytes) {
       const ok = await confirmDialog({
         title: 'Copy this table to your machine?',
         body: (
           <div className="space-y-3">
             <p>
-              <b className="text-fg">{table}</b> holds <b className="text-fg">{fmtBytes(bytes)}</b>
+              <b className="text-fg">{table}</b> holds <b className="text-fg">{fmtBytes(info.num_bytes)}</b>
+              {sample ? `, and a ${sample}% sample is about ${fmtBytes(bytes)}` : ''}
               {node.config.columns?.length || node.config.row_filter
                 ? ' before your column selection and row filter.'
                 : '.'}
@@ -84,8 +93,9 @@ export async function runNode(node: WNode) {
 
   if (node.kind === 'source') {
     let dr: DryRun
+    const sample = node.config.sample_percent
     try {
-      dr = await fetchDryRun(sql)
+      dr = await fetchDryRun(sql, { samplePercent: sample, nodeId: node.id })
     } catch (e) {
       toast.error('BigQuery rejected the query', { description: (e as Error).message })
       return
@@ -96,15 +106,17 @@ export async function runNode(node: WNode) {
       })
       return
     }
-    if (dr.needs_confirm) {
+    if (dr.needs_confirm || dr.warnings.length) {
       const ok = await confirmDialog({
         title: 'Run this query on BigQuery?',
         body: (
           <div className="space-y-3">
             <p>
               BigQuery estimates this query will process <b className="text-fg">{fmtBytes(dr.bytes_processed)}</b>,
-              about <b className="text-fg">{fmtUsd(dr.estimated_cost_usd)}</b> at on-demand pricing.
+              about <b className="text-fg">{fmtUsd(dr.estimated_cost_usd)}</b> at on-demand pricing
+              {sample ? ` (a ${sample}% sample)` : ''}.
             </p>
+            <WarningList warnings={dr.warnings} />
             <p className="text-faint">
               Hard cap: {fmtBytes(dr.max_bytes_billed)}. Once cached, every downstream transform is free.
             </p>
@@ -117,6 +129,13 @@ export async function runNode(node: WNode) {
   }
 
   await start(node)
+}
+
+/** Promote a sample run: turn sampling off and run the node in full (with the usual cost checks). */
+export async function runFull(node: WNode) {
+  await saveConfig(node.id, { sample_percent: undefined })
+  const fresh = cachedNode(node.id)
+  if (fresh) await runNode(fresh)
 }
 
 export async function cancelNode(node: WNode) {

@@ -29,6 +29,7 @@ def _node(row: sqlite3.Row) -> dict:
         "sql": row["sql"],
         "source_type": row["source_type"],
         "config": json.loads(row["config"]),
+        "pinned": bool(row["pinned"]),
         "x": row["pos_x"],
         "y": row["pos_y"],
     }
@@ -67,7 +68,7 @@ def clean_config(source_type: str | None, cfg: dict, current: dict | None = None
             out["columns"] = [str(c) for c in cfg["columns"]]
         if str(cfg.get("row_filter") or "").strip():
             out["row_filter"] = str(cfg["row_filter"]).strip()
-        return out
+        return {**out, **_sample(cfg)}
     if source_type == "file":
         out = dict(current or {})
         if cfg.get("sheet"):
@@ -75,7 +76,23 @@ def clean_config(source_type: str | None, cfg: dict, current: dict | None = None
         else:
             out.pop("sheet", None)
         return out
+    if source_type == "bq_query":
+        return _sample(cfg)
     return {}
+
+
+def _sample(cfg: dict) -> dict:
+    """Sample-first mode: read only this percentage of the table(s). Absent = full run."""
+    raw = cfg.get("sample_percent")
+    if raw in (None, "", 0):
+        return {}
+    try:
+        percent = float(raw)
+    except (TypeError, ValueError):
+        raise Invalid("The sample size must be a number") from None
+    if not 0 < percent < 100:
+        raise Invalid("The sample size must be between 0 and 100 percent")
+    return {"sample_percent": percent}
 
 
 def list_nodes() -> list[dict]:
@@ -202,6 +219,19 @@ def set_config(node_id: str, cfg: dict) -> None:
         con.execute("UPDATE nodes SET config = ?, updated_at = ? WHERE id = ?", (json.dumps(cfg), db.now(), node_id))
 
 
+def set_pinned(node_id: str, pinned: bool) -> dict:
+    get_node(node_id)
+    with db.connect() as con:
+        con.execute("UPDATE nodes SET pinned = ? WHERE id = ?", (int(pinned), node_id))
+    return get_node(node_id)
+
+
+def clear_run(node_id: str) -> None:
+    """Forget a node's cached result (the caller deletes the files). The node goes back to 'never run'."""
+    with db.connect() as con:
+        con.execute("DELETE FROM runs WHERE node_id = ?", (node_id,))
+
+
 def delete_node(node_id: str) -> None:
     get_node(node_id)
     with db.connect() as con:
@@ -306,3 +336,44 @@ def save_error(node_id: str, message: str) -> None:
 def get_errors() -> dict[str, dict]:
     with db.connect() as con:
         return {r["node_id"]: {"message": r["message"], "at": r["at"]} for r in con.execute("SELECT * FROM errors")}
+
+
+# ---- savings ledger -----------------------------------------------------------
+
+
+def add_ledger(
+    node_id: str, node_name: str, kind: str, *, bytes_billed: int, bytes_avoided: int, price_per_tib_usd: float
+) -> None:
+    tib = 1024**4
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO savings_ledger (node_id, node_name, kind, bytes_billed, bytes_avoided, usd_spent, "
+            "usd_avoided, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                node_id,
+                node_name,
+                kind,
+                bytes_billed,
+                bytes_avoided,
+                bytes_billed / tib * price_per_tib_usd,
+                bytes_avoided / tib * price_per_tib_usd,
+                db.now(),
+            ),
+        )
+
+
+def savings() -> dict:
+    """Totals over the whole ledger, plus per-node figures for nodes that still exist."""
+    with db.connect() as con:
+        total = con.execute(
+            "SELECT COALESCE(SUM(bytes_billed), 0) AS spent_bytes, COALESCE(SUM(bytes_avoided), 0) AS avoided_bytes, "
+            "COALESCE(SUM(usd_spent), 0) AS spent_usd, COALESCE(SUM(usd_avoided), 0) AS avoided_usd, "
+            "COALESCE(SUM(kind = 'bq'), 0) AS bq_runs, COALESCE(SUM(kind = 'local'), 0) AS local_runs, "
+            "MIN(at) AS since FROM savings_ledger"
+        ).fetchone()
+        rows = con.execute(
+            "SELECT l.node_id, n.name, SUM(l.bytes_billed) AS spent_bytes, SUM(l.bytes_avoided) AS avoided_bytes, "
+            "SUM(l.usd_spent) AS spent_usd, SUM(l.usd_avoided) AS avoided_usd, COUNT(*) AS runs "
+            "FROM savings_ledger l JOIN nodes n ON n.id = l.node_id GROUP BY l.node_id ORDER BY n.name"
+        ).fetchall()
+    return {"total": dict(total), "nodes": [dict(r) for r in rows]}

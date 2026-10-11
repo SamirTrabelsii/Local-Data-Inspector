@@ -6,6 +6,7 @@ Query runs cost money, so they are guarded by dry-runs and `maximum_bytes_billed
 import concurrent.futures
 import json
 import logging
+import time
 import urllib.request
 import warnings
 from collections.abc import Callable, Iterable, Iterator
@@ -21,6 +22,7 @@ from google.cloud import bigquery, bigquery_storage
 from google.cloud.bigquery_storage import types as bqs_types
 
 from ..cache.store import to_json
+from . import costwarn, sampling
 from .cancel import Token
 
 log = logging.getLogger(__name__)
@@ -94,16 +96,59 @@ def auth_status(settings: dict) -> dict:
     }
 
 
-def dry_run(sql: str, settings: dict) -> dict:
+_FACTS_TTL = 300
+_facts_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _table_facts(settings: dict, ref: bigquery.TableReference) -> dict:
+    """Size, width and partitioning of a table, cached for a few minutes (dry runs fire while you type)."""
+    key = f"{ref.project}.{ref.dataset_id}.{ref.table_id}"
+    hit = _facts_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _FACTS_TTL:
+        return hit[1]
+    t = client(settings).get_table(ref)
+    field = None
+    if t.time_partitioning:
+        field = t.time_partitioning.field or "_PARTITIONTIME"
+    elif t.range_partitioning:
+        field = t.range_partitioning.field
+    facts = {"id": key, "num_bytes": t.num_bytes, "num_columns": len(t.schema), "partition_field": field}
+    _facts_cache[key] = (time.monotonic(), facts)
+    return facts
+
+
+def effective_sql(sql: str, sample_percent: float | None) -> str:
+    """The SQL BigQuery actually receives: with TABLESAMPLE added when the source runs in sample mode."""
+    if not sample_percent:
+        return sql
+    sampled, count = sampling.sample_sql(sql, sample_percent)
+    if count == 0:
+        raise ValueError(
+            "Sample mode found no table to sample. Write tables as project.dataset.table "
+            "(views and wildcard tables can't be sampled), or turn sample mode off."
+        )
+    return sampled
+
+
+def dry_run(sql: str, settings: dict, sample_percent: float | None = None, previous_bytes: int | None = None) -> dict:
+    run_sql = effective_sql(sql, sample_percent)
     cfg = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
-    job = client(settings).query(sql, job_config=cfg)
+    job = client(settings).query(run_sql, job_config=cfg)
     processed = job.total_bytes_processed or 0
+    try:
+        tables = [_table_facts(settings, ref) for ref in (job.referenced_tables or [])[:8]]
+        found = costwarn.analyze(sql, tables, processed, previous_bytes, settings)
+    except Exception as exc:  # noqa: BLE001 - warnings are a bonus; never fail the estimate over them
+        log.info("Could not analyze the query for warnings: %s", exc)
+        found = []
     return {
         "bytes_processed": processed,
         "estimated_cost_usd": processed / TIB * settings["price_per_tib_usd"],
         "max_bytes_billed": settings["max_bytes_billed"],
         "needs_confirm": processed > settings["confirm_above_bytes"],
         "exceeds_cap": processed > settings["max_bytes_billed"],
+        "sample_percent": sample_percent or None,
+        "warnings": found,
     }
 
 
@@ -217,6 +262,7 @@ def read_table_to_parquet(config: dict, settings: dict, out: Path, token: Token 
         read_options=bqs_types.ReadSession.TableReadOptions(
             selected_fields=list(config.get("columns") or []),
             row_restriction=(config.get("row_filter") or "").strip(),
+            sample_percentage=config.get("sample_percent") or None,
         ),
     )
     session = storage.create_read_session(

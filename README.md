@@ -41,6 +41,10 @@ This starts the API on :8765 with auto-reload and Vite on http://localhost:5173.
 | | |
 |---|---|
 | **Cost guard** | Source SQL is dry-run as you type, so you see bytes and $ before running. Above the confirm threshold (1 GiB by default) you're asked to confirm, and `maximum_bytes_billed` (50 GiB by default) is enforced by BigQuery on every run. |
+| **Savings meter** | The top bar shows what you spent on BigQuery and what free local runs saved. Each BigQuery run is billed to the ledger; each transform run counts the bytes its upstream BigQuery sources processed as avoided (what re-querying would have cost). Per-node totals show on the card and the stats bar. History starts when this feature was added and survives node deletion. |
+| **Warnings** | The dry run flags a missing filter on a partitioned table (1 GiB or larger), `SELECT *` on a table with more than 20 columns, and unusually large scans (5x the node's last run, or over half the safety cap). They are advice only: you confirm and run anyway. The checks are conservative, so a missed warning is more likely than a false one. |
+| **Sample first** | BigQuery sources have a `Sample` control (1/5/10/25%). Table sources read a sample through the Storage API; query sources get `TABLESAMPLE SYSTEM (n PERCENT)` added to each fully written `project.dataset.table` (views, wildcard tables, CTEs and `FOR SYSTEM_TIME` are left alone). Sampled nodes and everything downstream are badged. **Run full** turns sampling off and runs the whole thing. |
+| **Cache** | The disk icon in the top bar opens the cache manager: size per node, pin, delete one, or clean up all unpinned / stale / older than N days. A preview lists what goes and what BigQuery sources would cost to rebuild. Pinned caches are never cleaned. Deleting a cache sets the node back to *not run* and marks downstream stale. |
 | **Refresh** | Sources only re-query BigQuery when you click **Refresh**. |
 | **Staleness** | A node is *stale* when its SQL changed, or an input re-ran since it last ran. This propagates downstream. **Run downstream** re-runs every transform below a node in order and never touches BigQuery. |
 | **Cancel** | **Cancel** on a running node cancels the BigQuery job or interrupts DuckDB and keeps the previous result. BigQuery cancels on a best-effort basis, so a job that is nearly done may still finish and be billed. |
@@ -56,9 +60,9 @@ Keyboard: `Ctrl/⌘ + Enter` runs the selected node. `Delete` removes the select
 ```
 backend/   FastAPI + DuckDB + BigQuery (Python, uv)
   ldi/engine/   dag.py (ordering, staleness) · executor.py · cancel.py · source_bq.py · source_file.py
-                transform_duck.py · sqlrefs.py (rename rewriting)
+                transform_duck.py · sqlrefs.py (rename rewriting) · sampling.py (TABLESAMPLE) · costwarn.py
   ldi/cache/    Parquet store + paged reads
-  ldi/api/      REST endpoints
+  ldi/api/      REST endpoints (cache.py: savings ledger, cache manager, pin)
 frontend/  React + TypeScript + Vite
   src/features/  canvas (React Flow) · explorer (BigQuery browser) · editor (CodeMirror + BigQuery autocomplete)
                  results (virtualized grid, export) · nodes · settings

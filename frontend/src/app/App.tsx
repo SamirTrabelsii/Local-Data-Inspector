@@ -2,6 +2,7 @@ import { ReactFlowProvider } from '@xyflow/react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import { Toaster } from 'sonner'
 import { ConfirmHost } from '../components/ConfirmHost'
+import { CacheDialog } from '../features/cache/CacheDialog'
 import { Canvas } from '../features/canvas/Canvas'
 import { Explorer } from '../features/explorer/Explorer'
 import { TablePreview } from '../features/explorer/TablePreview'
@@ -35,6 +36,7 @@ export function App() {
         </Group>
         <ConfirmHost />
         <SettingsDialog />
+        <CacheDialog />
         <TablePreview />
         <Toaster
           theme="dark"

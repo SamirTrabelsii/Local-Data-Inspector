@@ -22,6 +22,7 @@ def snapshot(running: set[str]) -> dict:
     stale = dag.compute_stale(nodes, edges, runs)
     parents = dag.parents_map(edges)
     names = {n["id"]: n["name"] for n in nodes}
+    sampled_sources = {n["id"] for n in nodes if n["kind"] == "source" and n["config"].get("sample_percent")}
 
     out = []
     for n in nodes:
@@ -33,6 +34,8 @@ def snapshot(running: set[str]) -> dict:
                 "stale": stale[n["id"]],
                 "error": errors.get(n["id"], {}).get("message"),
                 "inputs": [names[p] for p in parents.get(n["id"], [])],
+                # Built from a sample: the source itself, or a transform reading one (directly or further up).
+                "sampled": n["id"] in sampled_sources or bool(dag.ancestors(edges, n["id"]) & sampled_sources),
                 "result": None
                 if run is None
                 else {

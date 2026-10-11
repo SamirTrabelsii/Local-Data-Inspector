@@ -11,6 +11,8 @@ interface UiState {
   select: (id: string | null) => void
   settingsOpen: boolean
   setSettingsOpen: (open: boolean) => void
+  cacheOpen: boolean
+  setCacheOpen: (open: boolean) => void
   explorerOpen: boolean
   toggleExplorer: () => void
   /** BigQuery table id shown in the preview dialog. */
@@ -32,6 +34,8 @@ export const useUi = create<UiState>((set, get) => ({
   select: (selectedId) => set({ selectedId }),
   settingsOpen: false,
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+  cacheOpen: false,
+  setCacheOpen: (cacheOpen) => set({ cacheOpen }),
   explorerOpen: readExplorerOpen(),
   toggleExplorer: () => {
     const explorerOpen = !get().explorerOpen

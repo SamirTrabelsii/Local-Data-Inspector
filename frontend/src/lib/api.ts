@@ -22,6 +22,11 @@ export interface TableSourceConfig {
   row_filter?: string
 }
 
+/** Sample-first mode: read only this percentage of the table(s). Absent = full run. */
+export interface SampleConfig {
+  sample_percent?: number
+}
+
 export interface FileSourceConfig {
   file: string
   name: string
@@ -35,7 +40,7 @@ export interface WNode {
   id: string
   kind: NodeKind
   source_type: SourceType | null
-  config: Partial<TableSourceConfig & FileSourceConfig>
+  config: Partial<TableSourceConfig & FileSourceConfig & SampleConfig>
   name: string
   sql: string
   x: number
@@ -45,6 +50,9 @@ export interface WNode {
   error: string | null
   inputs: string[]
   result: RunResult | null
+  pinned: boolean
+  /** Built from a sample: this source is sampled, or a transform reads one upstream. */
+  sampled: boolean
 }
 
 export interface WEdge {
@@ -64,7 +72,15 @@ export interface ResultPage {
   total: number
 }
 
+export interface CostWarning {
+  code: 'missing_partition_filter' | 'select_star_wide' | 'large_scan'
+  table: string | null
+  message: string
+}
+
 export interface DryRun {
+  warnings: CostWarning[]
+  sample_percent: number | null
   bytes_processed: number
   estimated_cost_usd: number
   max_bytes_billed: number
@@ -109,6 +125,48 @@ export interface BqTableInfo {
   partitioning: { type: string; field: string | null } | null
   clustering: string[] | null
   columns: BqField[]
+}
+
+export interface SavingsTotals {
+  spent_bytes: number
+  avoided_bytes: number
+  spent_usd: number
+  avoided_usd: number
+  bq_runs: number
+  local_runs: number
+  since: string | null
+}
+
+export interface NodeSavings {
+  node_id: string
+  name: string
+  spent_bytes: number
+  avoided_bytes: number
+  spent_usd: number
+  avoided_usd: number
+  runs: number
+}
+
+export interface CacheEntry {
+  node_id: string
+  name: string
+  kind: NodeKind
+  source_type: SourceType | null
+  bytes: number
+  row_count: number
+  finished_at: string
+  pinned: boolean
+  stale: boolean
+  rebuild_usd: number
+  rebuild_from_bigquery: boolean
+}
+
+export type CleanScope = 'unpinned' | 'stale' | 'older_than'
+
+export interface CleanResult {
+  preview: boolean
+  freed_bytes: number
+  nodes: Pick<CacheEntry, 'node_id' | 'name' | 'bytes' | 'rebuild_usd' | 'rebuild_from_bigquery'>[]
 }
 
 export type ExportFormat = 'csv' | 'parquet' | 'xlsx'
@@ -195,7 +253,14 @@ export const api = {
     return req<ResultPage>('GET', `/nodes/${id}/results?${q}`, undefined, signal)
   },
   bqStatus: () => req<BqStatus>('GET', '/bq/status'),
-  dryRun: (sql: string, signal?: AbortSignal) => req<DryRun>('POST', '/bq/dry-run', { sql }, signal),
+  dryRun: (sql: string, opts: { samplePercent?: number; nodeId?: string } = {}, signal?: AbortSignal) =>
+    req<DryRun>('POST', '/bq/dry-run', { sql, sample_percent: opts.samplePercent, node_id: opts.nodeId }, signal),
+  savings: () => req<{ total: SavingsTotals; nodes: NodeSavings[] }>('GET', '/savings'),
+  cache: () => req<{ entries: CacheEntry[]; total_bytes: number; pinned_bytes: number; location: string }>('GET', '/cache'),
+  pin: (id: string, pinned: boolean) => req<WNode>('POST', `/nodes/${id}/pin`, { pinned }),
+  clearCache: (id: string) => req<{ freed_bytes: number }>('DELETE', `/cache/${id}`),
+  cleanCache: (scope: CleanScope, olderThanDays: number, preview: boolean) =>
+    req<CleanResult>('POST', '/cache/clean', { scope, older_than_days: olderThanDays, preview }),
   bqProjects: () => req<{ billing: string | null; projects: string[] }>('GET', '/bq/projects'),
   bqDatasets: (project: string) =>
     req<{ id: string; location: string | null }[]>('GET', `/bq/datasets?${qs({ project })}`),

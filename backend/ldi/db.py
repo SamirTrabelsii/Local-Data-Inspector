@@ -45,6 +45,19 @@ CREATE TABLE IF NOT EXISTS errors (
     message TEXT NOT NULL,
     at      TEXT NOT NULL
 );
+-- Append-only history of what each run cost on BigQuery and what it saved. Survives re-runs and node deletion.
+CREATE TABLE IF NOT EXISTS savings_ledger (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id       TEXT NOT NULL,
+    node_name     TEXT NOT NULL,
+    kind          TEXT NOT NULL,           -- bq (a BigQuery run) | local (a free transform run)
+    bytes_billed  INTEGER NOT NULL DEFAULT 0,
+    bytes_avoided INTEGER NOT NULL DEFAULT 0,
+    usd_spent     REAL NOT NULL DEFAULT 0,
+    usd_avoided   REAL NOT NULL DEFAULT 0,
+    at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS savings_ledger_node ON savings_ledger (node_id);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -66,6 +79,7 @@ DEFAULT_SETTINGS: dict = {
 MIGRATIONS = [
     ("nodes", "source_type", "ALTER TABLE nodes ADD COLUMN source_type TEXT"),
     ("nodes", "config", "ALTER TABLE nodes ADD COLUMN config TEXT NOT NULL DEFAULT '{}'"),
+    ("nodes", "pinned", "ALTER TABLE nodes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
